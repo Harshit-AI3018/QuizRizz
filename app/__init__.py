@@ -1,0 +1,1 @@
+"""CampusQuiz backend application."""

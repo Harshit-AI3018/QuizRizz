@@ -59,12 +59,12 @@ A rigorous inspection of the current repository at `D:\Quiz` on branch `main` es
 * **Backend HMAC Token Utility (`database/auth_utils.py`)**: Cryptographic HMAC-SHA256 actor context ticket generator matching PostgreSQL's `fn_verify_actor_context`.
 * **Configuration Files**: `.env.example`, `.gitignore`, `requirements.txt`, `README.md`, `ACCOMPLISHMENTS.md`.
 
-### What Does NOT Exist Yet `[PROPOSED]`
-* **Backend Application Code**: There is currently no `app/` or `src/` directory. FastAPI routers, Pydantic schemas, SQLAlchemy database session managers, dependency injection chains, and backend middleware are completely unwritten.
+### Implemented Foundation and Remaining Work
+* **Backend Foundation**: The FastAPI application factory, Pydantic settings, async SQLAlchemy engine/dependency, parameterized database-function caller, health routes, and foundation tests are implemented. Authentication, domain schemas/services, and business API endpoints remain unimplemented.
 * **Frontend Application Code**: There is currently no frontend directory (e.g., Next.js, React, or Vite). The user interfaces for students, faculty, and administrators have not been scaffolded.
 
 > [!IMPORTANT]
-> **To Incoming Developers:** Do not assume backend API endpoints or UI components exist. You are receiving a pristine, bulletproof, fully verified **Database Foundation (Phase 0)**. Your mission begins with **Phase 1: Backend Foundation Scaffold**.
+> **To Incoming Developers:** The verified database foundation (Phase 0) and backend scaffold (Phase 1) are in place. Domain APIs begin with **Phase 2: Authentication & Identity Service**.
 
 ---
 
@@ -495,9 +495,11 @@ $$\text{Total Score} = \text{ROUND}\left( \sum \text{Awarded Marks}, 2 \right)$$
 
 ---
 
-## 9. Backend Architecture (FastAPI Core) `[PROPOSED]`
+## 9. Backend Architecture (FastAPI Core) `[PHASE 1 FOUNDATION IMPLEMENTED]`
 
-The backend will be built using **FastAPI**, **Pydantic v2**, and **SQLAlchemy 2.0 (Core / Expression Engine)**.
+The backend uses **FastAPI**, **Pydantic v2**, and **SQLAlchemy 2.0 async Core**. Phase 1 provides the application factory, settings, restricted database connection, dependency, parameterized database-function caller, and liveness/readiness routes. Authentication and domain endpoints remain future work.
+
+The implemented scaffold currently lives in `app/main.py`, `app/core/config.py`, `app/db/`, and `app/api/`. Additional modules in the target layout below are planned for later backend phases.
 
 ### Target Directory Layout
 ```
@@ -841,9 +843,9 @@ Project Roadmap: Master Implementation Sequence
 
 * **`PHASE 0: Database Architecture & Hardening` `[COMPLETE]`**:
   * Schema DDL, constraints, triggers, HMAC authentication, scoring engine, 6 migrations applied and verified on Neon.
-* **`PHASE 1: Backend Foundation Scaffold` `[NEXT]`**:
+* **`PHASE 1: Backend Foundation Scaffold` `[COMPLETE]`**:
   * Objective: Establish FastAPI directory structure, Pydantic settings, SQLAlchemy async connection pool under `campusquiz_app`.
-* **`PHASE 2: Authentication & Identity Service`**:
+* **`PHASE 2: Authentication & Identity Service` `[NEXT]`**:
   * Objective: User login, Argon2 password verification, JWT issuance, `auth_utils.py` integration for HMAC ticket generation.
 * **`PHASE 3: Institutional Administration API`**:
   * Objective: CRUD for colleges, academic years, departments, classes, subjects, faculty profiles, student profiles, and enrollments.
@@ -920,7 +922,7 @@ Follow this checklist sequentially to start working on CampusQuiz:
 - [ ] **Step 3: Run Baseline Tests**: Execute `.\.venv\Scripts\python.exe -m pytest database\test_verify_and_migrate.py -v` (Confirm 59/59 passing).
 - [ ] **Step 4: Run SQL Verification**: Execute `python database/verify_and_migrate.py --tests-only` (Confirm 35/35 notices and 9/9 permissions passing).
 - [ ] **Step 5: Review Architecture**: Read this document thoroughly, specifically Sections 6 (Stored Procedures), 7 (Security), and 8 (Scoring).
-- [ ] **Step 6: Pick Roadmap Task**: Select the next assigned task from **Phase 1 (Backend Foundation Scaffold)**.
+- [ ] **Step 6: Pick Roadmap Task**: Select the next assigned task from **Phase 2 (Authentication & Identity Service)**.
 - [ ] **Step 7: Create Feature Branch**: Branch off `main` using `git checkout -b feat/your-feature-name`.
 - [ ] **Step 8: Implement with Tests**: Write code with accompanying pytest unit tests.
 - [ ] **Step 9: PR Submission**: Open a Pull Request into `main` with detailed verification steps.
