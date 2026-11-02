@@ -22,7 +22,7 @@
   * 59/59 Python unit tests passing under `pytest`.
 * **Phase 1 — Backend Foundation Scaffold**: **`IMPLEMENTED`** (FastAPI, Pydantic v2, async SQLAlchemy, health checks, and restricted-role connection setup).
 * **Phase 2 — Authentication & Identity Service**: **`IMPLEMENTED; LIVE DB VERIFICATION PENDING`** (Argon2 login, scoped access/refresh JWTs, token-version checks, logout revocation, and database HMAC tickets).
-* **Phase 3 — Institutional Administration API**: **`NEXT`**.
+* **Phase 3 — Institutional Administration API**: **`IMPLEMENTED; LIVE DB VERIFICATION PENDING`** (tenant-scoped academic CRUD, faculty/student provisioning, assignments, and enrollments).
 * **Phases 4–9 — Backend APIs**: **`PLANNED`** (quiz authoring, sessions, attempts, submission, and results).
 * **Phase 10 — Frontend Application**: **`PLANNED`** (Next.js / React interactive quiz engine).
 * **Phases 11–12 — Testing & Deployment**: **`PLANNED`**.
@@ -89,7 +89,7 @@ Configure `.env` using `.env.example`; `APP_DATABASE_URL` must use a direct Post
 python -m uvicorn app.main:app --reload
 ```
 
-The liveness endpoint is `GET /health/live`; `GET /health/ready` also checks the database connection. Run the backend foundation tests with:
+The liveness endpoint is `GET /health/live`; `GET /health/ready` also checks the database connection. Phase 3 administration endpoints are under `/api/v1/admin` and require an `ADMIN` access token. Each operation is scoped to the college in the authenticated token; college provisioning is deferred until a platform-administrator role is designed. Run the backend tests with:
 
 ```powershell
 python -m unittest discover -s tests -v

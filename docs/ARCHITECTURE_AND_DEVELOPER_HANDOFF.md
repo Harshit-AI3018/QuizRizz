@@ -1,6 +1,6 @@
 # CampusQuiz — Technical Architecture & Developer Handoff Documentation
 
-**Document Version:** 1.1.0 (Phase 2 Authentication Baseline)
+**Document Version:** 1.2.0 (Phase 3 Administration Baseline)
 **Target Audience:** Core Engineering Team, Backend/Frontend Developers, DevOps, and QA Engineers
 **Repository Working Directory:** `D:\Quiz`
 **Primary Git Branch:** `main`
@@ -60,11 +60,11 @@ A rigorous inspection of the current repository at `D:\Quiz` on branch `main` es
 * **Configuration Files**: `.env.example`, `.gitignore`, `requirements.txt`, `README.md`, `ACCOMPLISHMENTS.md`.
 
 ### Implemented Foundation and Remaining Work
-* **Backend Application**: The FastAPI foundation and Phase 2 authentication service are implemented and unit-tested. Live authentication against Neon remains unverified because no database credentials are configured in this workspace. Institutional administration, quiz authoring, session lifecycle, attempts, and results APIs remain unimplemented.
+* **Backend Application**: The FastAPI foundation, Phase 2 authentication service, and Phase 3 tenant-scoped institutional administration API are implemented and unit-tested. Live authentication and administration against Neon remain unverified because no database credentials are configured in this workspace. Quiz authoring, session lifecycle, attempts, and results APIs remain unimplemented.
 * **Frontend Application Code**: There is currently no frontend directory (e.g., Next.js, React, or Vite). The user interfaces for students, faculty, and administrators have not been scaffolded.
 
 > [!IMPORTANT]
-> **To Incoming Developers:** The verified database foundation (Phase 0), backend scaffold (Phase 1), and authentication service (Phase 2) are in place. Continue with **Phase 3: Institutional Administration API**.
+> **To Incoming Developers:** Phases 0-3 are implemented. Continue with **Phase 4: Question Bank & Quiz Authoring API**.
 
 ---
 
@@ -97,9 +97,9 @@ Feature Capability Matrix: Implemented Database Core vs. Planned Application Lay
 | :--- | :--- | :--- | :--- | :--- |
 | **Identity** | User Login & Role Retrieval | `users`, `roles`, `user_roles` | Login API `[IMPLEMENTED]` | Login Screen |
 | **Identity** | Password Hashing & Token Revocation | `password_hash`, `token_version` | Argon2/JWT Auth API `[IMPLEMENTED]` | Settings / Profile `[PLANNED]` |
-| **Tenancy** | College Multi-Tenant Isolation | Composite FKs `(college_id, ...)` | Dependency Injection | College Selector / Subdomain |
-| **Academic** | Department, Branch, Class, Subject Hierarchy | 6 relational tables + constraints | Admin Academic API | Admin Console |
-| **Academic** | Single Active Core Enrollment Enforcement | Partial Unique Index `uq_student_single_core_enrollment` | Enrollment Service | Student Management |
+| **Tenancy** | College Multi-Tenant Isolation | Composite FKs `(college_id, ...)` | Dependency Injection `[IMPLEMENTED]` | College Selector / Subdomain |
+| **Academic** | Department, Branch, Class, Subject Hierarchy | 6 relational tables + constraints | Admin Academic API `[IMPLEMENTED]` | Admin Console |
+| **Academic** | Single Active Core Enrollment Enforcement | Partial Unique Index `uq_student_single_core_enrollment` | Enrollment Service `[IMPLEMENTED]` | Student Management |
 | **Authoring** | Question Bank Creation (MCQ, True/False, Multiple Select) | `questions`, `question_options` | Question API | Rich Question Editor |
 | **Authoring** | Quiz Assembly & Sequence Ordering | `quizzes`, `quiz_questions` | Quiz Builder API | Quiz Drafting Canvas |
 | **Authoring** | Atomic Publishing Validation | `sp_publish_quiz` | Publishing Endpoint | Publish Confirmation Modal |
@@ -495,9 +495,9 @@ $$\text{Total Score} = \text{ROUND}\left( \sum \text{Awarded Marks}, 2 \right)$$
 
 ---
 
-## 9. Backend Architecture (FastAPI Core) `[PHASES 1-2 IMPLEMENTED]`
+## 9. Backend Architecture (FastAPI Core) `[PHASES 1-3 IMPLEMENTED]`
 
-The backend uses **FastAPI**, **Pydantic v2**, and **SQLAlchemy 2.0 async Core**. Phase 1 provides the application factory, settings, restricted database connection, dependency, parameterized database-function caller, and health routes. Phase 2 adds Argon2 login, JWT access/refresh tokens, current-user authentication, token-version revocation, and HMAC tickets for database procedures. Domain APIs remain future work.
+The backend uses **FastAPI**, **Pydantic v2**, and **SQLAlchemy 2.0 async Core**. Phase 1 provides the application factory, settings, restricted database connection, dependency, parameterized database-function caller, and health routes. Phase 2 adds Argon2 login, JWT access/refresh tokens, current-user authentication, token-version revocation, and HMAC tickets for database procedures. Phase 3 provides ADMIN-only tenant-scoped APIs for the caller's college, academic years, departments, branches, classes, subjects, faculty and student profiles, faculty assignments, and student enrollments. Profile creation atomically creates the account, role, and profile; deactivation revokes tokens and closes active assignments or enrollments. Lists are paginated, tenant IDs come only from the authenticated user, and constraint conflicts return HTTP 409. College create/delete are deliberately deferred because the current role model has no platform administrator; tenant admins can only read or update their own college.
 
 The implemented backend currently lives in `app/main.py`, `app/core/`, `app/db/`, `app/schemas/`, `app/services/`, and `app/api/`. `GET /api/v1/auth/me` validates access-token version, account status, college, and current roles against PostgreSQL on each request. Login uses the college ID and normalized email because email uniqueness is college-scoped. Refresh tokens retain their original expiry; logout increments the user's database `token_version`, revoking all of that user's outstanding tokens. Per-device refresh rotation is not claimed because the current schema has no refresh-session table. `AUTH_HMAC_SECRET` must match the active `app_auth_config` secret, while `JWT_SECRET_KEY` is a separate secret.
 
@@ -610,7 +610,7 @@ frontend/
 
 ---
 
-## 11. REST API Contract & Endpoint Roadmap `[PROPOSED]`
+## 11. REST API Contract & Endpoint Roadmap `[PHASES 1-3 IMPLEMENTED; REMAINDER PROPOSED]`
 
 Protected resource endpoints require a bearer access JWT. Login is unauthenticated; refresh and logout accept a refresh token in their request body.
 
@@ -620,12 +620,19 @@ Protected resource endpoints require a bearer access JWT. Login is unauthenticat
 * `POST /api/v1/auth/logout`: Accepts a refresh token and increments `users.token_version`, invalidating all outstanding tokens for that user.
 * `GET /api/v1/auth/me`: Validates the bearer access token and returns the current account and role data from the database.
 
-### 2. Quizzes (Faculty / Admin)
+### 2. Institutional Administration (College ADMIN)
+All endpoints below require an ADMIN bearer access token and are restricted to the token's college. List endpoints accept `limit` (1-500, default 100) and `offset` (default 0).
+* `GET /api/v1/admin/college` and `PATCH /api/v1/admin/college`: Read or update the authenticated administrator's own college. College creation and deletion require a future platform-admin provisioning design.
+* `GET|POST /api/v1/admin/academic/{resource}` and `GET|PATCH|DELETE /api/v1/admin/academic/{resource}/{id}`: CRUD for `academic-years`, `departments`, `branches`, `classes`, `subjects`, `faculty-assignments`, and `enrollments`. Enrollment and assignment deletion deactivates the record to preserve history; foreign-key or uniqueness conflicts return 409.
+* `GET|POST /api/v1/admin/faculty` and `GET|PATCH|DELETE /api/v1/admin/faculty/{user_id}`: Provision and manage faculty accounts and profiles. Create requests require an initial password (12-128 characters), which is Argon2-hashed; account, role, and profile creation is one transaction.
+* `GET|POST /api/v1/admin/students` and `GET|PATCH|DELETE /api/v1/admin/students/{user_id}`: Provision and manage student accounts and profiles. Deletion disables the account, revokes its tokens, and deactivates enrollments.
+
+### 3. Quizzes (Faculty / Admin)
 * `POST /api/v1/quizzes`: Create draft quiz.
 * `GET /api/v1/quizzes/{quiz_id}`: Fetch quiz draft with questions.
 * `POST /api/v1/quizzes/{quiz_id}/publish`: Calls `sp_publish_quiz`.
 
-### 3. Sessions (Faculty / Admin)
+### 4. Sessions (Faculty / Admin)
 * `POST /api/v1/sessions`: Schedule quiz session.
 * `POST /api/v1/sessions/{session_id}/activate`: Calls `sp_activate_quiz_session`.
 * `POST /api/v1/sessions/{session_id}/pause`: Calls `sp_pause_quiz_session`.
@@ -633,7 +640,7 @@ Protected resource endpoints require a bearer access JWT. Login is unauthenticat
 * `POST /api/v1/sessions/{session_id}/complete`: Calls `sp_complete_quiz_session`.
 * `POST /api/v1/sessions/{session_id}/release-results`: Calls `sp_release_session_results`.
 
-### 4. Quiz Taking (Student)
+### 5. Quiz Taking (Student)
 * `POST /api/v1/sessions/{session_id}/start`: Calls `sp_start_quiz_attempt`. Returns attempt metadata and sanitized questions.
 * `PUT /api/v1/attempts/{attempt_id}/responses/{question_id}`: Calls `sp_save_student_response`.
   * **Payload**: `{"selected_option_ids": ["uuid..."], "is_marked_for_review": false, "client_version": 2}`
@@ -848,8 +855,8 @@ Project Roadmap: Master Implementation Sequence
   * Objective: Establish FastAPI directory structure, Pydantic settings, SQLAlchemy async connection pool under `campusquiz_app`.
 * **`PHASE 2: Authentication & Identity Service` `[IMPLEMENTED; LIVE DB VERIFICATION PENDING]`**:
   * Objective: User login, Argon2 password verification, JWT issuance, `auth_utils.py` integration for HMAC ticket generation.
-* **`PHASE 3: Institutional Administration API` `[NEXT]`**:
-  * Objective: CRUD for colleges, academic years, departments, classes, subjects, faculty profiles, student profiles, and enrollments.
+* **`PHASE 3: Institutional Administration API` `[IMPLEMENTED; LIVE DB VERIFICATION PENDING]`**:
+  * Objective: Tenant-scoped CRUD for college metadata, academic years, departments, branches, classes, subjects, faculty/student profiles, assignments, and enrollments. Platform-level college provisioning is deferred until a platform-admin role is defined.
 * **`PHASE 4: Question Bank & Quiz Authoring API`**:
   * Objective: Question creation (MCQ, True/False, Multiple Select), option authoring, quiz assembly, marks override configuration.
 * **`PHASE 5: Publishing & Session Lifecycle Engine`**:
