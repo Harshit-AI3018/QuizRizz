@@ -9,7 +9,7 @@ def create_database_engine(settings: Settings) -> AsyncEngine:
     sslmode = url.query.get("sslmode")
 
     if isinstance(sslmode, tuple):
-        raise ValueError("DATABASE_URL must specify sslmode at most once")
+        raise ValueError("APP_DATABASE_URL must specify sslmode at most once")
     if sslmode is not None:
         supported_ssl_modes = {
             "allow",
@@ -20,7 +20,7 @@ def create_database_engine(settings: Settings) -> AsyncEngine:
             "verify-full",
         }
         if sslmode not in supported_ssl_modes:
-            raise ValueError("DATABASE_URL specifies an unsupported sslmode")
+            raise ValueError("APP_DATABASE_URL specifies an unsupported sslmode")
         connect_args["ssl"] = False if sslmode == "disable" else sslmode
         url = url.set(query={key: value for key, value in url.query.items() if key != "sslmode"})
 

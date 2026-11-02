@@ -21,8 +21,9 @@
   * 9/9 restricted application role (`campusquiz_app`) least-privilege checks passing.
   * 59/59 Python unit tests passing under `pytest`.
 * **Phase 1 — Backend Foundation Scaffold**: **`IMPLEMENTED`** (FastAPI, Pydantic v2, async SQLAlchemy, health checks, and restricted-role connection setup).
-* **Phase 2 — Authentication & Identity Service**: **`NEXT`**.
-* **Phases 3–9 — Backend APIs**: **`PLANNED`** (administration, quiz authoring, sessions, attempts, submission, and results).
+* **Phase 2 — Authentication & Identity Service**: **`IMPLEMENTED; LIVE DB VERIFICATION PENDING`** (Argon2 login, scoped access/refresh JWTs, token-version checks, logout revocation, and database HMAC tickets).
+* **Phase 3 — Institutional Administration API**: **`NEXT`**.
+* **Phases 4–9 — Backend APIs**: **`PLANNED`** (quiz authoring, sessions, attempts, submission, and results).
 * **Phase 10 — Frontend Application**: **`PLANNED`** (Next.js / React interactive quiz engine).
 * **Phases 11–12 — Testing & Deployment**: **`PLANNED`**.
 
@@ -82,7 +83,7 @@ pip install -r requirements.txt
 
 ### Backend Foundation
 
-Configure `.env` using `.env.example`, with a direct PostgreSQL endpoint and the restricted `campusquiz_app` role. Start the API with:
+Configure `.env` using `.env.example`; `APP_DATABASE_URL` must use a direct PostgreSQL endpoint and the restricted `campusquiz_app` role. Start the API with:
 
 ```powershell
 python -m uvicorn app.main:app --reload
@@ -100,14 +101,20 @@ Copy the template and populate your local credentials:
 cp .env.example .env
 ```
 
-Configure your unpooled Neon PostgreSQL endpoint in `.env`:
+Configure direct, unpooled Neon endpoints in `.env`. `DATABASE_URL` is reserved for the migration runner; the API uses `APP_DATABASE_URL` with the restricted `campusquiz_app` role:
 ```env
 # Use direct unpooled endpoint (not the -pooler host)
-DATABASE_URL=postgresql://neondb_owner:your_password@ep-xyz.neon.tech/campusquiz_db?sslmode=require
-AUTH_HMAC_SECRET=your_staging_hmac_secret_key_minimum_32_chars_long
+DATABASE_URL=postgresql://<migration-user>:<password>@<direct-endpoint>/<database>?sslmode=require
+AUTH_HMAC_SECRET=<same random secret configured in app_auth_config; at least 32 bytes>
+APP_DATABASE_URL=postgresql://campusquiz_app:<password>@<direct-endpoint>/<database>?sslmode=require
+JWT_SECRET_KEY=<different random secret; at least 32 bytes>
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=7
 ```
 
 ### 4. Running Verification Tests
+
+The backend requires both `AUTH_HMAC_SECRET` and `JWT_SECRET_KEY` from `.env.example`. Set the HMAC value to the same secret configured in `app_auth_config`; use a separate random JWT key (at least 32 bytes). Refresh tokens keep their original expiry, and logout invalidates all tokens for that user by incrementing `token_version`.
 
 ```powershell
 # 1. Run the local Python unit test suite (59 tests)
@@ -149,13 +156,16 @@ Quiz/
 ├── ACCOMPLISHMENTS.md                         # Milestone log and historical accomplishments
 ├── README.md                                  # Project overview and quickstart guide
 ├── requirements.txt                           # Python project dependencies
-├── app/                                        # Phase 1 FastAPI backend foundation
+├── app/                                        # Phase 1–2 backend foundation and authentication
 │   ├── main.py                                 # Application factory and lifespan
-│   ├── api/                                    # Health routes and DB dependencies
-│   ├── core/config.py                          # Validated application settings
-│   └── db/                                     # Async engine and DB-function caller
+│   ├── api/                                    # Versioned auth and health routes
+│   ├── core/                                   # Settings, JWT, Argon2, HMAC tickets
+│   ├── db/                                     # Async engine and DB-function caller
+│   ├── schemas/                                # Authentication request/response models
+│   └── services/                               # Authentication service
 ├── tests/
-│   └── test_backend_foundation.py              # Backend scaffold tests
+│   ├── test_backend_foundation.py              # Backend scaffold tests
+│   └── test_authentication.py                  # Authentication service tests
 ├── docs/
 │   └── ARCHITECTURE_AND_DEVELOPER_HANDOFF.md # Definitive engineering architecture and handoff
 └── database/
