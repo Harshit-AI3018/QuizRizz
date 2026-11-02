@@ -20,8 +20,11 @@
   * 35 integration assertions (`TEST-01A` through `TEST-14B`) passing inside transactional rollback.
   * 9/9 restricted application role (`campusquiz_app`) least-privilege checks passing.
   * 59/59 Python unit tests passing under `pytest`.
-* **Phase 1 — Backend Foundation Scaffold**: **`READY FOR IMPLEMENTATION`** (FastAPI, Pydantic v2, SQLAlchemy Core).
-* **Phase 2 — Frontend Application**: **`PLANNED`** (Next.js / React interactive quiz engine).
+* **Phase 1 — Backend Foundation Scaffold**: **`IMPLEMENTED`** (FastAPI, Pydantic v2, async SQLAlchemy, health checks, and restricted-role connection setup).
+* **Phase 2 — Authentication & Identity Service**: **`NEXT`**.
+* **Phases 3–9 — Backend APIs**: **`PLANNED`** (administration, quiz authoring, sessions, attempts, submission, and results).
+* **Phase 10 — Frontend Application**: **`PLANNED`** (Next.js / React interactive quiz engine).
+* **Phases 11–12 — Testing & Deployment**: **`PLANNED`**.
 
 ---
 
@@ -75,6 +78,20 @@ python -m venv .venv
 
 # Install dependencies
 pip install -r requirements.txt
+```
+
+### Backend Foundation
+
+Configure `.env` using `.env.example`, with a direct PostgreSQL endpoint and the restricted `campusquiz_app` role. Start the API with:
+
+```powershell
+python -m uvicorn app.main:app --reload
+```
+
+The liveness endpoint is `GET /health/live`; `GET /health/ready` also checks the database connection. Run the backend foundation tests with:
+
+```powershell
+python -m unittest discover -s tests -v
 ```
 
 ### 3. Environment Configuration
@@ -132,6 +149,13 @@ Quiz/
 ├── ACCOMPLISHMENTS.md                         # Milestone log and historical accomplishments
 ├── README.md                                  # Project overview and quickstart guide
 ├── requirements.txt                           # Python project dependencies
+├── app/                                        # Phase 1 FastAPI backend foundation
+│   ├── main.py                                 # Application factory and lifespan
+│   ├── api/                                    # Health routes and DB dependencies
+│   ├── core/config.py                          # Validated application settings
+│   └── db/                                     # Async engine and DB-function caller
+├── tests/
+│   └── test_backend_foundation.py              # Backend scaffold tests
 ├── docs/
 │   └── ARCHITECTURE_AND_DEVELOPER_HANDOFF.md # Definitive engineering architecture and handoff
 └── database/
