@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from app.api.health import liveness, readiness
+from app.api.deps import get_access_token_payload
 from app.core.config import Settings
 from app.db.session import create_database_engine
 from app.db.sp_caller import call_database_function
@@ -17,7 +18,11 @@ from app.main import create_app
 def make_settings(
     database_url: str = "postgresql://campusquiz_app:password@localhost/campusquiz",
 ) -> Settings:
-    return Settings(database_url=database_url)
+    return Settings(
+        app_database_url=database_url,
+        jwt_secret_key="a" * 32,
+        auth_hmac_secret="b" * 32,
+    )
 
 
 class SettingsTests(unittest.TestCase):
@@ -25,9 +30,25 @@ class SettingsTests(unittest.TestCase):
         settings = make_settings()
         self.assertEqual(settings.async_database_url().drivername, "postgresql+asyncpg")
 
+    def test_prefers_runtime_role_url_over_migration_url(self) -> None:
+        environment = {
+            "DATABASE_URL": "postgresql://migration_owner:password@migration.test/db",
+            "APP_DATABASE_URL": "postgresql://campusquiz_app:password@app.test/db",
+            "JWT_SECRET_KEY": "j" * 48,
+            "AUTH_HMAC_SECRET": "h" * 48,
+        }
+        with patch.dict("os.environ", environment):
+            settings = Settings(_env_file=None)
+        self.assertEqual(settings.async_database_url().host, "app.test")
+
     def test_rejects_non_application_database_role(self) -> None:
         with self.assertRaisesRegex(ValueError, "campusquiz_app"):
             make_settings("postgresql://owner:password@localhost/campusquiz")
+
+    def test_missing_bearer_token_is_rejected_before_database_access(self) -> None:
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(get_access_token_payload(None, make_settings()))
+        self.assertEqual(raised.exception.status_code, 401)
 
     def test_rejects_pooled_database_endpoint(self) -> None:
         with self.assertRaisesRegex(ValueError, "direct, unpooled"):
@@ -109,6 +130,13 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
         paths = self.application.openapi()["paths"]
         self.assertIn("/health/live", paths)
         self.assertIn("/health/ready", paths)
+        self.assertIn("/api/v1/health/live", paths)
+        self.assertIn("/api/v1/health/ready", paths)
+        self.assertIn("/api/v1/auth/login", paths)
+        self.assertIn("/api/v1/auth/refresh", paths)
+        self.assertIn("/api/v1/auth/logout", paths)
+        self.assertIn("/api/v1/auth/me", paths)
+        self.assertNotIn("/auth/login", paths)
 
 
 class DatabaseFunctionCallerTests(unittest.IsolatedAsyncioTestCase):

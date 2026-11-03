@@ -1,6 +1,6 @@
 # CampusQuiz — Technical Architecture & Developer Handoff Documentation
 
-**Document Version:** 1.0.0 (Phase 1 Baseline & Production Handoff)
+**Document Version:** 1.1.0 (Phase 2 Authentication Baseline)
 **Target Audience:** Core Engineering Team, Backend/Frontend Developers, DevOps, and QA Engineers
 **Repository Working Directory:** `D:\Quiz`
 **Primary Git Branch:** `main`
@@ -60,11 +60,11 @@ A rigorous inspection of the current repository at `D:\Quiz` on branch `main` es
 * **Configuration Files**: `.env.example`, `.gitignore`, `requirements.txt`, `README.md`, `ACCOMPLISHMENTS.md`.
 
 ### Implemented Foundation and Remaining Work
-* **Backend Foundation**: The FastAPI application factory, Pydantic settings, async SQLAlchemy engine/dependency, parameterized database-function caller, health routes, and foundation tests are implemented. Authentication, domain schemas/services, and business API endpoints remain unimplemented.
+* **Backend Application**: The FastAPI foundation and Phase 2 authentication service are implemented and unit-tested. Live authentication against Neon remains unverified because no database credentials are configured in this workspace. Institutional administration, quiz authoring, session lifecycle, attempts, and results APIs remain unimplemented.
 * **Frontend Application Code**: There is currently no frontend directory (e.g., Next.js, React, or Vite). The user interfaces for students, faculty, and administrators have not been scaffolded.
 
 > [!IMPORTANT]
-> **To Incoming Developers:** The verified database foundation (Phase 0) and backend scaffold (Phase 1) are in place. Domain APIs begin with **Phase 2: Authentication & Identity Service**.
+> **To Incoming Developers:** The verified database foundation (Phase 0), backend scaffold (Phase 1), and authentication service (Phase 2) are in place. Continue with **Phase 3: Institutional Administration API**.
 
 ---
 
@@ -95,8 +95,8 @@ Feature Capability Matrix: Implemented Database Core vs. Planned Application Lay
 
 | Domain | Capability | Database Tier `[IMPLEMENTED]` | Backend API `[PLANNED]` | Frontend UI `[PLANNED]` |
 | :--- | :--- | :--- | :--- | :--- |
-| **Identity** | User Registration & Role Assignment | `users`, `roles`, `user_roles` | Auth Router | Login / Signup Screen |
-| **Identity** | Password Reset & Token Version Invalidation | `token_version` column | Revocation Endpoint | Settings / Profile |
+| **Identity** | User Login & Role Retrieval | `users`, `roles`, `user_roles` | Login API `[IMPLEMENTED]` | Login Screen |
+| **Identity** | Password Hashing & Token Revocation | `password_hash`, `token_version` | Argon2/JWT Auth API `[IMPLEMENTED]` | Settings / Profile `[PLANNED]` |
 | **Tenancy** | College Multi-Tenant Isolation | Composite FKs `(college_id, ...)` | Dependency Injection | College Selector / Subdomain |
 | **Academic** | Department, Branch, Class, Subject Hierarchy | 6 relational tables + constraints | Admin Academic API | Admin Console |
 | **Academic** | Single Active Core Enrollment Enforcement | Partial Unique Index `uq_student_single_core_enrollment` | Enrollment Service | Student Management |
@@ -495,11 +495,11 @@ $$\text{Total Score} = \text{ROUND}\left( \sum \text{Awarded Marks}, 2 \right)$$
 
 ---
 
-## 9. Backend Architecture (FastAPI Core) `[PHASE 1 FOUNDATION IMPLEMENTED]`
+## 9. Backend Architecture (FastAPI Core) `[PHASES 1-2 IMPLEMENTED]`
 
-The backend uses **FastAPI**, **Pydantic v2**, and **SQLAlchemy 2.0 async Core**. Phase 1 provides the application factory, settings, restricted database connection, dependency, parameterized database-function caller, and liveness/readiness routes. Authentication and domain endpoints remain future work.
+The backend uses **FastAPI**, **Pydantic v2**, and **SQLAlchemy 2.0 async Core**. Phase 1 provides the application factory, settings, restricted database connection, dependency, parameterized database-function caller, and health routes. Phase 2 adds Argon2 login, JWT access/refresh tokens, current-user authentication, token-version revocation, and HMAC tickets for database procedures. Domain APIs remain future work.
 
-The implemented scaffold currently lives in `app/main.py`, `app/core/config.py`, `app/db/`, and `app/api/`. Additional modules in the target layout below are planned for later backend phases.
+The implemented backend currently lives in `app/main.py`, `app/core/`, `app/db/`, `app/schemas/`, `app/services/`, and `app/api/`. `GET /api/v1/auth/me` validates access-token version, account status, college, and current roles against PostgreSQL on each request. Login uses the college ID and normalized email because email uniqueness is college-scoped. Refresh tokens retain their original expiry; logout increments the user's database `token_version`, revoking all of that user's outstanding tokens. Per-device refresh rotation is not claimed because the current schema has no refresh-session table. `AUTH_HMAC_SECRET` must match the active `app_auth_config` secret, while `JWT_SECRET_KEY` is a separate secret.
 
 ### Target Directory Layout
 ```
@@ -612,12 +612,13 @@ frontend/
 
 ## 11. REST API Contract & Endpoint Roadmap `[PROPOSED]`
 
-All endpoints require Bearer Token authorization (JWT) except login.
+Protected resource endpoints require a bearer access JWT. Login is unauthenticated; refresh and logout accept a refresh token in their request body.
 
 ### 1. Authentication
-* `POST /api/v1/auth/login`: Authenticates credentials, returns JWT containing `user_id`, `college_id`, `roles`.
-* `POST /api/v1/auth/refresh`: Refreshes session token.
-* `POST /api/v1/auth/logout`: Revokes token.
+* `POST /api/v1/auth/login`: Accepts `college_id`, email, and password; verifies Argon2 hashes and returns short-lived access and longer-lived refresh JWTs.
+* `POST /api/v1/auth/refresh`: Accepts a refresh token and issues a new access token, preserving the refresh token's original expiry.
+* `POST /api/v1/auth/logout`: Accepts a refresh token and increments `users.token_version`, invalidating all outstanding tokens for that user.
+* `GET /api/v1/auth/me`: Validates the bearer access token and returns the current account and role data from the database.
 
 ### 2. Quizzes (Faculty / Admin)
 * `POST /api/v1/quizzes`: Create draft quiz.
@@ -797,8 +798,8 @@ AUTH_HMAC_SECRET=your_staging_hmac_secret_key_minimum_32_chars_long
 
 # JWT Settings
 JWT_SECRET_KEY=your_jwt_signing_secret_key_minimum_32_chars_long
-JWT_ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=60
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=7
 ```
 
 > [!WARNING]
@@ -845,9 +846,9 @@ Project Roadmap: Master Implementation Sequence
   * Schema DDL, constraints, triggers, HMAC authentication, scoring engine, 6 migrations applied and verified on Neon.
 * **`PHASE 1: Backend Foundation Scaffold` `[COMPLETE]`**:
   * Objective: Establish FastAPI directory structure, Pydantic settings, SQLAlchemy async connection pool under `campusquiz_app`.
-* **`PHASE 2: Authentication & Identity Service` `[NEXT]`**:
+* **`PHASE 2: Authentication & Identity Service` `[IMPLEMENTED; LIVE DB VERIFICATION PENDING]`**:
   * Objective: User login, Argon2 password verification, JWT issuance, `auth_utils.py` integration for HMAC ticket generation.
-* **`PHASE 3: Institutional Administration API`**:
+* **`PHASE 3: Institutional Administration API` `[NEXT]`**:
   * Objective: CRUD for colleges, academic years, departments, classes, subjects, faculty profiles, student profiles, and enrollments.
 * **`PHASE 4: Question Bank & Quiz Authoring API`**:
   * Objective: Question creation (MCQ, True/False, Multiple Select), option authoring, quiz assembly, marks override configuration.
@@ -906,7 +907,7 @@ To ensure zero conflicts and clean code reviews:
 
 ## 19. Known Limitations, Incomplete Features & Open Decisions
 
-1. **Backend & Frontend Not Yet Implemented**: As documented in Section 1, the entire API and UI layers remain to be built starting in Phase 1.
+1. **Domain APIs & Frontend Not Yet Implemented**: The authentication service is implemented, but institutional, quiz, session, attempt, and result APIs and all UI layers remain to be built.
 2. **WebSocket Real-Time Monitoring `[PROPOSED]`**: Live student attempt monitoring currently relies on REST polling. Implementing a WebSocket or Server-Sent Events (SSE) gateway for live faculty proctoring is scheduled for Phase 9.
 3. **Session Reconnect Grace Period `[OPEN DECISION]`**: Current deadline enforcement is absolute based on `deadline TIMESTAMPTZ`. The team must decide whether a 60-second network disconnection grace period should be introduced during final auto-submission.
 4. **Question Types Expansion `[DEFERRED]`**: Coding questions, file uploads, and essay evaluations are deferred to Phase 13 (Post-MVP).
@@ -922,7 +923,7 @@ Follow this checklist sequentially to start working on CampusQuiz:
 - [ ] **Step 3: Run Baseline Tests**: Execute `.\.venv\Scripts\python.exe -m pytest database\test_verify_and_migrate.py -v` (Confirm 59/59 passing).
 - [ ] **Step 4: Run SQL Verification**: Execute `python database/verify_and_migrate.py --tests-only` (Confirm 35/35 notices and 9/9 permissions passing).
 - [ ] **Step 5: Review Architecture**: Read this document thoroughly, specifically Sections 6 (Stored Procedures), 7 (Security), and 8 (Scoring).
-- [ ] **Step 6: Pick Roadmap Task**: Select the next assigned task from **Phase 2 (Authentication & Identity Service)**.
+- [ ] **Step 6: Pick Roadmap Task**: Select the next assigned task from **Phase 3 (Institutional Administration API)**.
 - [ ] **Step 7: Create Feature Branch**: Branch off `main` using `git checkout -b feat/your-feature-name`.
 - [ ] **Step 8: Implement with Tests**: Write code with accompanying pytest unit tests.
 - [ ] **Step 9: PR Submission**: Open a Pull Request into `main` with detailed verification steps.
