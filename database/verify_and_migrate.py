@@ -117,6 +117,7 @@ MIGRATION_FILES: List[MigrationItem] = [
     MigrationItem("04_security_hardening.sql", "HMAC Definer Protection, Search Paths & Table Hardening"),
     MigrationItem("05_fix_for_share_of.sql", "Fix sp_start_quiz_attempt FOR SHARE OF qs (classes join)"),
     MigrationItem("06_fix_student_response_record.sql", "Fix sp_save_student_response v_saved_version record assignment"),
+    MigrationItem("07_revoke_app_student_responses_mutation.sql", "Revoke Direct student_responses INSERT/UPDATE from campusquiz_app"),
 ]
 
 # The verification test suite — run separately via --tests-only.
@@ -131,6 +132,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     checksum    TEXT
 );
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'campusquiz_app') THEN
+        GRANT SELECT ON schema_migrations TO campusquiz_app;
+    END IF;
+END $$;
 """
 
 
@@ -240,9 +247,17 @@ def verify_server_version(conn) -> None:
 # Migration tracking table
 # ---------------------------------------------------------------------------
 
+def check_tracking_table_exists(conn) -> bool:
+    """Check whether schema_migrations table exists in public schema (read-only catalog check)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('public.schema_migrations') IS NOT NULL;")
+        row = cur.fetchone()
+        return bool(row and row[0])
+
+
 def ensure_tracking_table(conn) -> None:
     """
-    Create schema_migrations table if it doesn't exist.
+    Create schema_migrations table if it doesn't exist, and grant SELECT to campusquiz_app.
     Uses autocommit — safe to call repeatedly.
     """
     with conn.cursor() as cur:
@@ -253,9 +268,20 @@ def ensure_tracking_table(conn) -> None:
 def get_applied_migrations(conn) -> dict:
     """Return {version: applied_at_str} for all recorded migrations."""
     with conn.cursor() as cur:
-        cur.execute("SELECT version, applied_at FROM schema_migrations ORDER BY applied_at;")
-        rows = cur.fetchall()
-    return {row[0]: str(row[1]) for row in rows}
+        try:
+            cur.execute("SELECT version, applied_at FROM schema_migrations ORDER BY applied_at;")
+            rows = cur.fetchall()
+            return {row[0]: str(row[1]) for row in rows}
+        except Exception as err:
+            pgcode = getattr(err, "pgcode", None)
+            # 42P01 is UndefinedTable in PostgreSQL
+            if pgcode == "42P01" or "does not exist" in str(err).lower():
+                return {}
+            print(
+                f"\n[!] ERROR: Failed to read migration history from 'schema_migrations': {err}",
+                file=sys.stderr,
+            )
+            raise
 
 
 def record_migration(conn, filename: str, description: str, checksum: Optional[str] = None) -> None:
@@ -425,12 +451,12 @@ def detect_existing_objects(conn) -> dict:
         )
         result["has_roles"] = cur.fetchone()[0] > 0
 
-        # schema_migrations table
+        # schema_migrations table (read-only catalog check)
         cur.execute(
-            "SELECT COUNT(*) FROM information_schema.tables "
-            "WHERE table_schema = 'public' AND table_name = 'schema_migrations';"
+            "SELECT to_regclass('public.schema_migrations') IS NOT NULL;"
         )
-        result["has_tracking_table"] = cur.fetchone()[0] > 0
+        row = cur.fetchone()
+        result["has_tracking_table"] = bool(row and row[0])
 
     return result
 
@@ -549,6 +575,24 @@ def verify_application_role_permissions(conn) -> List[PermissionTestResult]:
             "CREATE TABLE public.tmp_unauthorized_probe (id INT);",
             "42501",
         ),
+        (
+            "PERM-10",
+            "Direct INSERT on student_responses by campusquiz_app",
+            "INSERT INTO student_responses (id, attempt_id, question_id, client_version) VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1);",
+            "42501",
+        ),
+        (
+            "PERM-11",
+            "Direct UPDATE on student_responses.selected_option_ids by campusquiz_app",
+            "UPDATE student_responses SET selected_option_ids = ARRAY[gen_random_uuid()] WHERE id = gen_random_uuid();",
+            "42501",
+        ),
+        (
+            "PERM-12",
+            "Direct UPDATE on student_responses.client_version by campusquiz_app",
+            "UPDATE student_responses SET client_version = 2 WHERE id = gen_random_uuid();",
+            "42501",
+        ),
     ]
 
     with conn.cursor() as cur:
@@ -569,33 +613,37 @@ def verify_application_role_permissions(conn) -> List[PermissionTestResult]:
                 )
             return results
 
-        for code, name, query, expected_sqlstate in test_cases:
-            try:
-                cur.execute(query)
-                results.append(
-                    PermissionTestResult(
-                        code=code, name=name, status="FAILED",
-                        detail="Operation succeeded when it should have been blocked",
-                    )
-                )
-            except Exception as err:
-                pgcode = getattr(err, "pgcode", None)
-                if pgcode == expected_sqlstate:
-                    results.append(
-                        PermissionTestResult(
-                            code=code, name=name, status="PASSED",
-                            detail=f"Blocked with expected SQLSTATE {expected_sqlstate}",
-                        )
-                    )
-                else:
+        try:
+            for code, name, query, expected_sqlstate in test_cases:
+                try:
+                    cur.execute(query)
                     results.append(
                         PermissionTestResult(
                             code=code, name=name, status="FAILED",
-                            detail=f"Unexpected error ({pgcode}): {err}",
+                            detail="Operation succeeded when it should have been blocked",
                         )
                     )
-
-        cur.execute("RESET ROLE;")
+                except Exception as err:
+                    pgcode = getattr(err, "pgcode", None)
+                    if pgcode == expected_sqlstate:
+                        results.append(
+                            PermissionTestResult(
+                                code=code, name=name, status="PASSED",
+                                detail=f"Blocked with expected SQLSTATE {expected_sqlstate}",
+                            )
+                        )
+                    else:
+                        results.append(
+                            PermissionTestResult(
+                                code=code, name=name, status="FAILED",
+                                detail=f"Unexpected error ({pgcode}): {err}",
+                            )
+                        )
+        finally:
+            try:
+                cur.execute("RESET ROLE;")
+            except Exception:
+                pass
 
     return results
 
@@ -670,9 +718,13 @@ def run_test_file(conn, file_path: str) -> Tuple[List[str], bool]:
 # Status display
 # ---------------------------------------------------------------------------
 
-def print_migration_status(statuses: List[MigrationStatus]) -> None:
+def print_migration_status(statuses: List[MigrationStatus], table_found: bool = True) -> None:
     print("\n" + "─" * 78)
-    print(" MIGRATION STATUS")
+    if not table_found:
+        print(" MIGRATION STATUS (tracking table 'schema_migrations' not found)")
+        print(" Notice: Tracking table has not been created yet; all migrations shown as pending.")
+    else:
+        print(" MIGRATION STATUS")
     print("─" * 78)
     for s in statuses:
         if s.applied:
@@ -736,12 +788,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--url",
         metavar="DATABASE_URL",
-        help="PostgreSQL connection URL (alternative to positional argument).",
+        help="PostgreSQL connection URL for application / status check (alternative to positional argument).",
+    )
+    parser.add_argument(
+        "--migration-url",
+        metavar="MIGRATION_DATABASE_URL",
+        help=(
+            "Privileged PostgreSQL connection URL (database owner/superuser). "
+            "Required for --migrate and --mark-applied; overrides MIGRATION_DATABASE_URL env var."
+        ),
     )
     parser.add_argument(
         "--migrate",
         action="store_true",
-        help="Apply pending migrations, then run verification tests.",
+        help="Apply pending migrations using privileged connection, then run verification tests.",
     )
     parser.add_argument(
         "--tests-only",
@@ -763,29 +823,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--status",
         action="store_true",
-        help="Print migration status and exit (no migrations applied).",
+        help="Print migration status and exit (read-only, does not create or modify tables).",
     )
 
     return parser
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Main entry point & URL Resolution
 # ---------------------------------------------------------------------------
 
-def resolve_db_url(args) -> Optional[str]:
+def resolve_app_url(args) -> Optional[str]:
     """
-    Determine the database URL from CLI args or environment.
-    Priority: positional arg > --url flag > environment variable.
+    Determine the application database URL from CLI args or environment.
+    Priority: positional arg > --url flag > DATABASE_URL / APP_DATABASE_URL (and aliases).
     """
     raw: Optional[str] = None
-    if args.db_url_positional:
+    if getattr(args, "db_url_positional", None):
         raw = args.db_url_positional
-    elif args.url:
+    elif getattr(args, "url", None):
         raw = args.url
     else:
         raw = (
             os.getenv("DATABASE_URL")
+            or os.getenv("APP_DATABASE_URL")
             or os.getenv("NEON_DATABASE_URL")
             or os.getenv("STAGING_DATABASE_URL")
             or os.getenv("PGDATABASE_URL")
@@ -793,6 +854,61 @@ def resolve_db_url(args) -> Optional[str]:
     if not raw:
         return None
     return validate_and_clean_database_url(raw)
+
+
+def resolve_migration_url(args) -> Optional[str]:
+    """
+    Determine the privileged migration database URL from CLI args or environment.
+    Priority: --migration-url flag > MIGRATION_DATABASE_URL (and aliases).
+    Note: Does NOT fall back to DATABASE_URL / APP_DATABASE_URL to prevent
+    accidentally executing migrations under the restricted application role.
+    """
+    raw: Optional[str] = None
+    if getattr(args, "migration_url", None):
+        raw = args.migration_url
+    else:
+        raw = (
+            os.getenv("MIGRATION_DATABASE_URL")
+            or os.getenv("NEON_MIGRATION_DATABASE_URL")
+            or os.getenv("STAGING_MIGRATION_DATABASE_URL")
+        )
+    if not raw:
+        return None
+    return validate_and_clean_database_url(raw)
+
+
+def resolve_status_url(args) -> Optional[str]:
+    """
+    Determine the database URL for status display.
+    Prioritises the privileged migration connection (MIGRATION_DATABASE_URL)
+    when configured, so schema_migrations can be read even if the restricted
+    application role (campusquiz_app) does not have SELECT on schema_migrations.
+    Falls back to the application URL (DATABASE_URL) if migration URL is not configured.
+    """
+    if getattr(args, "migration_url", None):
+        return validate_and_clean_database_url(args.migration_url)
+    if getattr(args, "db_url_positional", None):
+        return validate_and_clean_database_url(args.db_url_positional)
+    if getattr(args, "url", None):
+        return validate_and_clean_database_url(args.url)
+
+    mig_url = resolve_migration_url(args)
+    if mig_url:
+        return mig_url
+
+    return resolve_app_url(args)
+
+
+def resolve_db_url(args) -> Optional[str]:
+    """
+    Determine the appropriate database URL based on the requested command mode.
+    For migration / mark-applied: strictly requires privileged migration URL.
+    For status / tests-only / general: prioritises migration URL when configured,
+    falling back to application URL.
+    """
+    if getattr(args, "migrate", False) or getattr(args, "mark_applied", None):
+        return resolve_migration_url(args)
+    return resolve_status_url(args)
 
 
 def main() -> None:
@@ -805,23 +921,39 @@ def main() -> None:
     print("=" * 78)
 
     # ------------------------------------------------------------------
-    # Resolve database URL (required for every mode that touches the DB)
+    # Determine execution mode and resolve appropriate database URL
     # ------------------------------------------------------------------
+    is_migration_mode = bool(args.migrate or args.mark_applied)
+
     try:
-        db_url = resolve_db_url(args)
+        if is_migration_mode:
+            db_url = resolve_migration_url(args)
+            if not db_url:
+                print(
+                    "\n[!] ERROR: Migration execution requires a privileged database connection.\n"
+                    "    MIGRATION_DATABASE_URL is not set (and --migration-url was not provided).\n"
+                    "    DATABASE_URL is reserved for the restricted application role (campusquiz_app).\n"
+                    "    Provide a privileged connection URL via:\n"
+                    "      1. Flag:            --migration-url \"postgresql://<owner>:<pass>@...\"\n"
+                    "      2. Environment var: MIGRATION_DATABASE_URL in .env or shell\n"
+                    "    See .env.example for details.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            db_url = resolve_status_url(args)
+            if not db_url:
+                print("\n[!] ERROR: No database connection URL found.")
+                print("    Provide it via:")
+                print('      1. Positional arg:   python database/verify_and_migrate.py "postgresql://..."')
+                print('      2. Flag:             --url "postgresql://..." or --migration-url "postgresql://..."')
+                print("      3. Environment var:  MIGRATION_DATABASE_URL or DATABASE_URL in .env or shell")
+                print("\n    Example:")
+                print("      postgresql://neondb_owner:pass@ep-xyz.neon.tech/neondb?sslmode=require")
+                print("\n    See .env.example for reference.")
+                sys.exit(1)
     except ValueError as ex:
         print(f"\n[!] ERROR in database URL: {ex}", file=sys.stderr)
-        sys.exit(1)
-
-    if not db_url:
-        print("\n[!] ERROR: No database connection URL found.")
-        print("    Provide it via:")
-        print('      1. Positional arg:   python database/verify_and_migrate.py "postgresql://..."')
-        print("      2. Flag:             --url \"postgresql://...\"")
-        print("      3. Environment var:  DATABASE_URL in .env or shell")
-        print("\n    Example:")
-        print("      postgresql://neondb_owner:pass@ep-xyz.neon.tech/neondb?sslmode=require")
-        print("\n    See .env.example for reference.")
         sys.exit(1)
 
     # ------------------------------------------------------------------
@@ -834,26 +966,67 @@ def main() -> None:
     try:
         verify_server_version(conn)
 
-        # ------------------------------------------------------------------
-        # Bootstrap tracking table
-        # ------------------------------------------------------------------
-        # Before doing anything else, check whether the database is in an
-        # ambiguous state (has CampusQuiz objects but no tracking table).
-        ambiguous = check_ambiguous_state(conn)
+        # In migration mode: verify we are NOT connected as campusquiz_app
+        if is_migration_mode:
+            with conn.cursor() as cur:
+                cur.execute("SELECT current_user;")
+                current_user = cur.fetchone()[0]
+            if current_user == "campusquiz_app":
+                print(
+                    f"\n[!] ERROR: Migration execution refused: connected as restricted role '{current_user}'.\n"
+                    "    The application role does not have DDL privileges on schema 'public'.\n"
+                    "    Migrations require a privileged role (e.g. database owner or postgres).\n"
+                    "    Ensure MIGRATION_DATABASE_URL connects as the database owner, not campusquiz_app.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
-        if ambiguous and not args.mark_applied:
-            # Ensure the tracking table exists first so --mark-applied works
+        # ------------------------------------------------------------------
+        # --status mode (or default with no --migrate / --tests-only / --mark-applied)
+        # Genuinely READ-ONLY: Never executes DDL, never calls ensure_tracking_table
+        # ------------------------------------------------------------------
+        is_status_mode = args.status or (not args.migrate and not args.tests_only and not args.mark_applied)
+        if is_status_mode:
+            has_table = check_tracking_table_exists(conn)
+            if not has_table:
+                print("\n[!] Notice: Migration tracking table 'schema_migrations' does not exist in schema 'public'.")
+                print("    No migrations have been tracked or executed yet via verify_and_migrate.py.")
+                statuses = [
+                    MigrationStatus(
+                        filename=item.filename,
+                        description=item.description,
+                        applied=False,
+                        applied_at=None,
+                    )
+                    for item in MIGRATION_FILES
+                ]
+            else:
+                statuses = get_migration_status(conn)
+            print_migration_status(statuses, table_found=has_table)
+            if not args.migrate and not args.tests_only and not args.mark_applied:
+                print(
+                    "\n[i] Run with --migrate to apply pending migrations (requires MIGRATION_DATABASE_URL).\n"
+                    "    Run with --tests-only to run verification tests without migrating.\n"
+                    "    Run with --help for full usage.\n"
+                )
+            return
+
+        # ------------------------------------------------------------------
+        # Bootstrap tracking table (Only for --migrate and --mark-applied)
+        # ------------------------------------------------------------------
+        if is_migration_mode:
+            ambiguous = check_ambiguous_state(conn)
+            if ambiguous and not args.mark_applied:
+                ensure_tracking_table(conn)
+                print(RECONCILIATION_HELP)
+                print(
+                    "[!] Stopping. Use --mark-applied to reconcile the migration state, "
+                    "then re-run with --migrate.\n"
+                    "    Example:\n"
+                    "      python database/verify_and_migrate.py --mark-applied 01_schema.sql\n"
+                )
+                sys.exit(3)
             ensure_tracking_table(conn)
-            print(RECONCILIATION_HELP)
-            print(
-                "[!] Stopping. Use --mark-applied to reconcile the migration state, "
-                "then re-run with --migrate.\n"
-                "    Example:\n"
-                "      python database/verify_and_migrate.py --mark-applied 01_schema.sql\n"
-            )
-            sys.exit(3)
-
-        ensure_tracking_table(conn)
 
         # ------------------------------------------------------------------
         # --mark-applied mode
@@ -869,19 +1042,6 @@ def main() -> None:
             print("\n[+] Done. Re-run with --migrate to apply remaining pending migrations.")
             print_migration_status(get_migration_status(conn))
             return
-
-        # ------------------------------------------------------------------
-        # --status mode (or default with no --migrate / --tests-only)
-        # ------------------------------------------------------------------
-        if args.status or (not args.migrate and not args.tests_only):
-            print_migration_status(get_migration_status(conn))
-            if not args.migrate and not args.tests_only:
-                print(
-                    "\n[i] Run with --migrate to apply pending migrations.\n"
-                    "    Run with --tests-only to run verification tests without migrating.\n"
-                    "    Run with --help for full usage.\n"
-                )
-                return
 
         # ------------------------------------------------------------------
         # --migrate mode

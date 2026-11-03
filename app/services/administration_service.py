@@ -166,7 +166,7 @@ async def _require_active_role(
     )
     if result.scalar_one_or_none() is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"{user_field} must identify an active {role_code.lower()} in this college",
         )
 

@@ -10,6 +10,8 @@
 -- Direct update of evaluation columns & server_received_at must be blocked (42501)
 -- ----------------------------------------------------------------------------
 DO $$
+DECLARE
+    v_col TEXT;
 BEGIN
     -- Switch to restricted application role to verify permission boundaries
     EXECUTE 'SET ROLE campusquiz_app';
@@ -29,6 +31,80 @@ BEGIN
     EXCEPTION WHEN insufficient_privilege THEN
         RAISE NOTICE 'TEST-01B PASSED: Direct update of server_received_at was blocked by column-level permissions (42501).';
     END;
+
+    -- 1C: Direct INSERT on student_responses blocked (Migration 07 least-privilege enforcement)
+    BEGIN
+        EXECUTE 'INSERT INTO student_responses (id, attempt_id, question_id, client_version) VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1)';
+        RAISE EXCEPTION 'TEST-01C FAILED: Direct insert into student_responses was permitted for campusquiz_app!';
+    EXCEPTION WHEN insufficient_privilege THEN
+        RAISE NOTICE 'TEST-01C PASSED: Direct insert into student_responses was blocked by permissions (42501).';
+    END;
+
+    -- 1D: Direct UPDATE on selected_option_ids blocked
+    BEGIN
+        EXECUTE 'UPDATE student_responses SET selected_option_ids = ARRAY[gen_random_uuid()] WHERE id = gen_random_uuid()';
+        RAISE EXCEPTION 'TEST-01D FAILED: Direct update of selected_option_ids was permitted for campusquiz_app!';
+    EXCEPTION WHEN insufficient_privilege THEN
+        RAISE NOTICE 'TEST-01D PASSED: Direct update of selected_option_ids was blocked by permissions (42501).';
+    END;
+
+    -- 1E: Direct UPDATE on client_version blocked
+    BEGIN
+        EXECUTE 'UPDATE student_responses SET client_version = 2 WHERE id = gen_random_uuid()';
+        RAISE EXCEPTION 'TEST-01E FAILED: Direct update of client_version was permitted for campusquiz_app!';
+    EXCEPTION WHEN insufficient_privilege THEN
+        RAISE NOTICE 'TEST-01E PASSED: Direct update of client_version was blocked by permissions (42501).';
+    END;
+
+    -- 1F: Comprehensive catalog-based privilege verification across all 13 columns
+    IF has_table_privilege('campusquiz_app', 'student_responses', 'INSERT') THEN
+        RAISE EXCEPTION 'TEST-01F FAILED: campusquiz_app unexpectedly holds table-level INSERT on student_responses';
+    END IF;
+    IF has_table_privilege('campusquiz_app', 'student_responses', 'UPDATE') THEN
+        RAISE EXCEPTION 'TEST-01F FAILED: campusquiz_app unexpectedly holds table-level UPDATE on student_responses';
+    END IF;
+
+    -- Verify all 13 columns directly from PostgreSQL system catalog pg_attribute
+    FOR v_col IN
+        SELECT a.attname
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = 'student_responses'
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+    LOOP
+        -- INSERT must be FALSE for every column
+        IF has_column_privilege('campusquiz_app', 'student_responses', v_col, 'INSERT') THEN
+            RAISE EXCEPTION 'TEST-01F FAILED: campusquiz_app unexpectedly holds column-level INSERT on %', v_col;
+        END IF;
+
+        -- UPDATE must be FALSE for every column
+        IF has_column_privilege('campusquiz_app', 'student_responses', v_col, 'UPDATE') THEN
+            RAISE EXCEPTION 'TEST-01F FAILED: campusquiz_app unexpectedly holds column-level UPDATE on %', v_col;
+        END IF;
+
+        -- Evaluative columns must NOT have SELECT
+        IF v_col IN ('is_evaluated', 'is_correct', 'awarded_marks') THEN
+            IF has_column_privilege('campusquiz_app', 'student_responses', v_col, 'SELECT') THEN
+                RAISE EXCEPTION 'TEST-01F FAILED: campusquiz_app unexpectedly holds SELECT on evaluative column %', v_col;
+            END IF;
+        ELSE
+            -- The 10 approved columns MUST have SELECT
+            IF NOT has_column_privilege('campusquiz_app', 'student_responses', v_col, 'SELECT') THEN
+                RAISE EXCEPTION 'TEST-01F FAILED: campusquiz_app missing required SELECT on approved column %', v_col;
+            END IF;
+        END IF;
+    END LOOP;
+
+    -- Definer must retain required privileges for SECURITY DEFINER routines
+    IF NOT has_table_privilege('campusquiz_definer', 'student_responses', 'INSERT') OR
+       NOT has_table_privilege('campusquiz_definer', 'student_responses', 'UPDATE') OR
+       NOT has_table_privilege('campusquiz_definer', 'student_responses', 'SELECT') THEN
+        RAISE EXCEPTION 'TEST-01F FAILED: campusquiz_definer missing required table-level privileges on student_responses';
+    END IF;
+    RAISE NOTICE 'TEST-01F PASSED: Complete 13-column catalog-based privilege assertions verified for app and definer roles.';
 
     EXECUTE 'RESET ROLE';
 EXCEPTION WHEN OTHERS THEN

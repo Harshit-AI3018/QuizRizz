@@ -19,6 +19,7 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 import os
+import psycopg2
 import unittest
 from io import StringIO
 from unittest.mock import MagicMock, patch, call
@@ -540,13 +541,13 @@ class TestPermissionVerification(unittest.TestCase):
         # First call is SET ROLE (succeeds), subsequent are the test queries
         cursor.execute.side_effect = [
             None,           # SET ROLE campusquiz_app — succeeds
-            error, error, error, error, error, error, error, error, error,  # 9 restricted queries — all blocked
+            error, error, error, error, error, error, error, error, error, error, error, error,  # 12 restricted queries — all blocked
             None,           # RESET ROLE
         ]
 
         results = vm.verify_application_role_permissions(conn)
 
-        self.assertEqual(len(results), 9)
+        self.assertEqual(len(results), 12)
         for r in results:
             self.assertEqual(r.status, "PASSED", msg=f"{r.code} was not PASSED")
 
@@ -562,7 +563,8 @@ class TestPermissionVerification(unittest.TestCase):
             None,           # SET ROLE
             None,           # PERM-01 query succeeds — should have been blocked
             error_42501, error_42501, error_42501, error_42501,
-            error_42501, error_42501, error_42501, error_42501,  # remaining 8 blocked
+            error_42501, error_42501, error_42501, error_42501,
+            error_42501, error_42501, error_42501,  # remaining 11 blocked
             None,           # RESET ROLE
         ]
 
@@ -576,7 +578,7 @@ class TestPermissionVerification(unittest.TestCase):
         cursor.execute.side_effect = Exception("role does not exist")
 
         results = vm.verify_application_role_permissions(conn)
-        self.assertEqual(len(results), 9)
+        self.assertEqual(len(results), 12)
         for r in results:
             self.assertEqual(r.status, "SKIPPED")
 
@@ -587,7 +589,7 @@ class TestPermissionVerification(unittest.TestCase):
 
 class TestMigrationCatalogue(unittest.TestCase):
 
-    def test_all_six_migration_files_present(self):
+    def test_all_seven_migration_files_present(self):
         filenames = [m.filename for m in vm.MIGRATION_FILES]
         self.assertIn("01_schema.sql", filenames)
         self.assertIn("02_procedures.sql", filenames)
@@ -595,8 +597,9 @@ class TestMigrationCatalogue(unittest.TestCase):
         self.assertIn("04_security_hardening.sql", filenames)
         self.assertIn("05_fix_for_share_of.sql", filenames)
         self.assertIn("06_fix_student_response_record.sql", filenames)
+        self.assertIn("07_revoke_app_student_responses_mutation.sql", filenames)
         self.assertNotIn("test_suite.sql", filenames)
-        self.assertEqual(len(filenames), 6)
+        self.assertEqual(len(filenames), 7)
         self.assertEqual(vm.TEST_SUITE_FILE, "test_suite.sql")
 
     def test_migration_items_have_descriptions(self):
@@ -1133,7 +1136,7 @@ class TestMainExitCodeOnSuiteFailure(unittest.TestCase):
         """main() must exit with code 2 when suite_success is False."""
         failing_reports = ["TEST-01 [PASSED]: ok"] * 20   # enough notices but suite failed
         mock_conn = _make_main_mock_conn()
-        with patch("sys.argv", ["verify_and_migrate.py", "--tests-only"]), \
+        with patch("sys.argv", ["verify_and_migrate.py", "--tests-only", "--url", "postgresql://test:test@localhost:5432/test"]), \
              patch("verify_and_migrate.psycopg2") as mock_psycopg2, \
              patch("verify_and_migrate.load_dotenv"), \
              patch("verify_and_migrate.verify_server_version"), \
@@ -1156,7 +1159,7 @@ class TestMainExitCodeOnSuiteFailure(unittest.TestCase):
             code="PERM-01", name="ok", status="PASSED", detail="ok"
         )
         mock_conn = _make_main_mock_conn()
-        with patch("sys.argv", ["verify_and_migrate.py", "--tests-only"]), \
+        with patch("sys.argv", ["verify_and_migrate.py", "--tests-only", "--url", "postgresql://test:test@localhost:5432/test"]), \
              patch("verify_and_migrate.psycopg2") as mock_psycopg2, \
              patch("verify_and_migrate.load_dotenv"), \
              patch("verify_and_migrate.verify_server_version"), \
@@ -1340,6 +1343,368 @@ class TestTestSuiteAuthSignatures(unittest.TestCase):
     def test_stud_any_sig_generated_with_any_role(self):
         """v_stud_any_sig must be minted with ANY role."""
         self.assertIn("v_stud_any_sig := fn_generate_auth_signature(v_student, 'ANY', 300);", self.test_suite_sql)
+
+
+
+# ---------------------------------------------------------------------------
+# Regression: Migration 07 Integrity (student_responses least-privilege)
+# ---------------------------------------------------------------------------
+
+class TestMigration07Integrity(unittest.TestCase):
+    """Verify Migration 07 revokes direct mutations and preserves SELECT."""
+
+    @classmethod
+    def setUpClass(cls):
+        m07_path = os.path.join(SCRIPT_DIR, "07_revoke_app_student_responses_mutation.sql")
+        with open(m07_path, "r", encoding="utf-8") as f:
+            cls.m07_sql = f.read()
+
+    def test_revokes_all_from_public_and_app_role(self):
+        """Must revoke ALL on student_responses from PUBLIC and campusquiz_app."""
+        self.assertIn(
+            "REVOKE ALL ON student_responses FROM PUBLIC, campusquiz_app;",
+            self.m07_sql
+        )
+
+    def test_explicit_column_level_insert_revocations(self):
+        """Must explicitly revoke column-level INSERT on all student_responses columns."""
+        self.assertIn("REVOKE INSERT (", self.m07_sql)
+        expected_insert_cols = [
+            "id",
+            "attempt_id",
+            "question_id",
+            "selected_option_ids",
+            "is_marked_for_review",
+            "client_version",
+            "client_submitted_at",
+            "created_at",
+            "updated_at",
+        ]
+        for col in expected_insert_cols:
+            self.assertIn(col, self.m07_sql)
+        self.assertIn(") ON TABLE public.student_responses FROM campusquiz_app;", self.m07_sql)
+
+    def test_explicit_column_level_update_revocations(self):
+        """Must explicitly revoke column-level UPDATE on all student_responses columns."""
+        self.assertIn("REVOKE UPDATE (", self.m07_sql)
+        expected_update_cols = [
+            "selected_option_ids",
+            "is_marked_for_review",
+            "client_version",
+            "client_submitted_at",
+            "updated_at",
+        ]
+        for col in expected_update_cols:
+            self.assertIn(col, self.m07_sql)
+        self.assertIn(") ON TABLE public.student_responses FROM campusquiz_app;", self.m07_sql)
+
+    def test_restores_approved_columns_select_only(self):
+        """Must grant SELECT only on approved non-evaluative columns."""
+        expected_columns = [
+            "id",
+            "attempt_id",
+            "question_id",
+            "selected_option_ids",
+            "is_marked_for_review",
+            "client_version",
+            "client_submitted_at",
+            "server_received_at",
+            "created_at",
+            "updated_at",
+        ]
+        for col in expected_columns:
+            self.assertIn(col, self.m07_sql)
+        self.assertIn(") ON student_responses TO campusquiz_app;", self.m07_sql)
+
+    def test_excludes_evaluative_columns_from_select(self):
+        """Must NOT grant SELECT on evaluation/scoring columns."""
+        import re
+        executable_sql = "\n".join(
+            line for line in self.m07_sql.splitlines() if not line.strip().startswith("--")
+        )
+        for col in ["is_evaluated", "is_correct", "awarded_marks"]:
+            self.assertFalse(
+                bool(re.search(r"\b" + col + r"\b", executable_sql, re.IGNORECASE)),
+                f"Evaluative column {col} must not appear in executable SQL grants"
+            )
+
+    def test_no_mutation_grants_to_app_role(self):
+        """Must NOT grant INSERT, UPDATE, DELETE, or TRUNCATE to campusquiz_app."""
+        import re
+        executable_sql = "\n".join(
+            line for line in self.m07_sql.splitlines() if not line.strip().startswith("--")
+        )
+        self.assertFalse(bool(re.search(r"\bGRANT\s+INSERT\b", executable_sql, re.IGNORECASE)))
+        self.assertFalse(bool(re.search(r"\bGRANT\s+UPDATE\b", executable_sql, re.IGNORECASE)))
+        self.assertFalse(bool(re.search(r"\bGRANT\s+DELETE\b", executable_sql, re.IGNORECASE)))
+        self.assertFalse(bool(re.search(r"\bGRANT\s+TRUNCATE\b", executable_sql, re.IGNORECASE)))
+
+    def test_definer_permissions_untouched(self):
+        """Must NOT revoke or modify privileges for campusquiz_definer."""
+        import re
+        executable_sql = "\n".join(
+            line for line in self.m07_sql.splitlines() if not line.strip().startswith("--")
+        )
+        self.assertFalse(
+            bool(re.search(r"\bcampusquiz_definer\b", executable_sql, re.IGNORECASE)),
+            "Migration 07 must not alter campusquiz_definer privileges"
+        )
+
+
+# ===========================================================================
+# TEST GROUP 15: Migration Connection & Read-Only Status Handling
+# ===========================================================================
+
+class TestMigrationConnectionAndReadOnlyStatus(unittest.TestCase):
+    """
+    Verify least-privilege migration connection separation and read-only status behavior:
+    1. --status never executes DDL (CREATE, ALTER, DROP, TRUNCATE, INSERT, UPDATE, DELETE).
+    2. Missing migration tracking table is handled safely by --status.
+    3. Migration execution refuses to proceed without a privileged migration connection.
+    4. Migration execution refuses to proceed when connected as campusquiz_app.
+    5. Application and migration connections are resolved independently and not confused.
+    6. BOOTSTRAP_SCHEMA_MIGRATIONS grants SELECT on schema_migrations to campusquiz_app.
+    """
+
+    def test_status_does_not_execute_ddl(self):
+        """--status must be genuinely read-only: no CREATE, ALTER, DROP, TRUNCATE, INSERT, UPDATE, DELETE."""
+        executed_sqls = []
+
+        mock_conn = MagicMock()
+        mock_conn.autocommit = True
+        mock_conn.notices = []
+
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = lambda s: mock_cursor
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+
+        def record_execute(sql, *args, **kwargs):
+            executed_sqls.append(str(sql).strip())
+
+        mock_cursor.execute.side_effect = record_execute
+        mock_cursor.fetchone.side_effect = [
+            ("15.4",),
+            ("campusquiz", "campusquiz_app"),
+            (1,),
+        ]
+        mock_cursor.fetchall.return_value = [("01_schema.sql", "2026-11-01 10:00:00+05:30")]
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch("sys.argv", ["verify_and_migrate.py", "--status", "--url", "postgresql://campusquiz_app:pass@localhost:5432/campusquiz"]), \
+             patch("verify_and_migrate.psycopg2.connect", return_value=mock_conn), \
+             patch("verify_and_migrate.ensure_tracking_table") as mock_ensure, \
+             patch("sys.stdout", new_callable=StringIO):
+            vm.main()
+
+        mock_ensure.assert_not_called()
+
+        ddl_keywords = ["CREATE", "ALTER", "DROP", "TRUNCATE", "INSERT", "UPDATE", "DELETE"]
+        for sql in executed_sqls:
+            first_word = sql.split()[0].upper() if sql.split() else ""
+            for kw in ddl_keywords:
+                self.assertNotEqual(
+                    first_word, kw,
+                    f"--status must not execute mutation statement: {sql}"
+                )
+
+    def test_status_handles_missing_tracking_table_safely(self):
+        """When schema_migrations does not exist, --status reports clearly and shows all pending without DDL."""
+        mock_conn = MagicMock()
+        mock_conn.autocommit = True
+        mock_conn.notices = []
+
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = lambda s: mock_cursor
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+
+        mock_cursor.fetchone.side_effect = [
+            ("15.4",),
+            ("campusquiz", "campusquiz_app"),
+            (0,),
+        ]
+        mock_cursor.fetchall.return_value = []
+        mock_conn.cursor.return_value = mock_cursor
+
+        stdout_buf = StringIO()
+        with patch("sys.argv", ["verify_and_migrate.py", "--status", "--url", "postgresql://campusquiz_app:pass@localhost:5432/campusquiz"]), \
+             patch("verify_and_migrate.psycopg2.connect", return_value=mock_conn), \
+             patch("verify_and_migrate.ensure_tracking_table") as mock_ensure, \
+             patch("sys.stdout", stdout_buf):
+            vm.main()
+
+        mock_ensure.assert_not_called()
+        output = stdout_buf.getvalue()
+        self.assertIn("schema_migrations", output)
+        self.assertIn("PENDING", output)
+
+    def test_migrate_refuses_without_migration_url(self):
+        """--migrate must exit with code 1 if MIGRATION_DATABASE_URL is not set, even if DATABASE_URL is set."""
+        env = {
+            "DATABASE_URL": "postgresql://campusquiz_app:secret@localhost:5432/campusquiz",
+        }
+        stderr_buf = StringIO()
+        with patch.dict(os.environ, env, clear=True), \
+             patch("sys.argv", ["verify_and_migrate.py", "--migrate"]), \
+             patch("verify_and_migrate.psycopg2.connect") as mock_connect, \
+             patch("sys.stderr", stderr_buf), \
+             self.assertRaises(SystemExit) as cm:
+            vm.main()
+
+        self.assertEqual(cm.exception.code, 1)
+        mock_connect.assert_not_called()
+        self.assertIn("MIGRATION_DATABASE_URL", stderr_buf.getvalue())
+        self.assertIn("campusquiz_app", stderr_buf.getvalue())
+
+    def test_migrate_refuses_when_connected_as_campusquiz_app(self):
+        """--migrate must exit with code 1 if the connected user is campusquiz_app."""
+        mock_conn = MagicMock()
+        mock_conn.autocommit = True
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = lambda s: mock_cursor
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchone.side_effect = [
+            ("15.4",),
+            ("campusquiz", "campusquiz_app"),
+            ("campusquiz_app",),
+        ]
+        mock_conn.cursor.return_value = mock_cursor
+
+        stderr_buf = StringIO()
+        with patch("sys.argv", ["verify_and_migrate.py", "--migrate", "--migration-url", "postgresql://campusquiz_app:secret@localhost:5432/campusquiz"]), \
+             patch("verify_and_migrate.psycopg2.connect", return_value=mock_conn), \
+             patch("verify_and_migrate.ensure_tracking_table") as mock_ensure, \
+             patch("sys.stderr", stderr_buf), \
+             self.assertRaises(SystemExit) as cm:
+            vm.main()
+
+        self.assertEqual(cm.exception.code, 1)
+        mock_ensure.assert_not_called()
+        self.assertIn("Migration execution refused: connected as restricted role 'campusquiz_app'", stderr_buf.getvalue())
+
+    def test_app_and_migration_urls_not_confused(self):
+        """resolve_app_url and resolve_migration_url must resolve their respective variables without cross-talk."""
+        parser = vm.build_arg_parser()
+
+        with patch.dict(os.environ, {"DATABASE_URL": "postgresql://app:pass@localhost:5432/db"}, clear=True):
+            args = parser.parse_args([])
+            self.assertIsNotNone(vm.resolve_app_url(args))
+            self.assertIn("app", vm.resolve_app_url(args))
+            self.assertIsNone(vm.resolve_migration_url(args))
+
+        with patch.dict(os.environ, {"MIGRATION_DATABASE_URL": "postgresql://owner:pass@localhost:5432/db"}, clear=True):
+            args = parser.parse_args([])
+            self.assertIsNone(vm.resolve_app_url(args))
+            self.assertIsNotNone(vm.resolve_migration_url(args))
+            self.assertIn("owner", vm.resolve_migration_url(args))
+
+        with patch.dict(os.environ, {
+            "DATABASE_URL": "postgresql://app_user:pass@localhost:5432/db",
+            "MIGRATION_DATABASE_URL": "postgresql://owner_user:pass@localhost:5432/db"
+        }, clear=True):
+            args = parser.parse_args([])
+            self.assertIn("app_user", vm.resolve_app_url(args))
+            self.assertIn("owner_user", vm.resolve_migration_url(args))
+
+        with patch.dict(os.environ, {
+            "DATABASE_URL": "postgresql://env_app:pass@localhost:5432/db",
+            "MIGRATION_DATABASE_URL": "postgresql://env_owner:pass@localhost:5432/db"
+        }, clear=True):
+            args = parser.parse_args(["--url", "postgresql://cli_app:pass@localhost:5432/db", "--migration-url", "postgresql://cli_owner:pass@localhost:5432/db"])
+            self.assertIn("cli_app", vm.resolve_app_url(args))
+            self.assertIn("cli_owner", vm.resolve_migration_url(args))
+
+    def test_bootstrap_schema_migrations_grants_select_to_app(self):
+        """BOOTSTRAP_SCHEMA_MIGRATIONS must grant SELECT on schema_migrations to campusquiz_app."""
+        self.assertIn("GRANT SELECT ON schema_migrations TO campusquiz_app", vm.BOOTSTRAP_SCHEMA_MIGRATIONS)
+        self.assertIn("CREATE TABLE IF NOT EXISTS schema_migrations", vm.BOOTSTRAP_SCHEMA_MIGRATIONS)
+
+    def test_check_tracking_table_exists_uses_to_regclass(self):
+        """check_tracking_table_exists must query to_regclass to avoid privilege-filtered information_schema."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = lambda s: mock_cursor
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchone.return_value = (True,)
+        mock_conn.cursor.return_value = mock_cursor
+
+        result = vm.check_tracking_table_exists(mock_conn)
+        self.assertTrue(result)
+        executed_sql = mock_cursor.execute.call_args[0][0]
+        self.assertIn("to_regclass", executed_sql)
+        self.assertNotIn("information_schema", executed_sql)
+
+    def test_status_prefers_migration_url_when_configured(self):
+        """--status must prefer MIGRATION_DATABASE_URL over DATABASE_URL when configured."""
+        parser = vm.build_arg_parser()
+        env = {
+            "DATABASE_URL": "postgresql://campusquiz_app:pass@localhost:5432/db",
+            "MIGRATION_DATABASE_URL": "postgresql://neondb_owner:pass@localhost:5432/db",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            args = parser.parse_args(["--status"])
+            status_url = vm.resolve_status_url(args)
+            self.assertIn("neondb_owner", status_url)
+            self.assertNotIn("campusquiz_app", status_url)
+
+    def test_status_falls_back_to_app_url_when_migration_url_not_configured(self):
+        """--status falls back to DATABASE_URL when MIGRATION_DATABASE_URL is not set."""
+        parser = vm.build_arg_parser()
+        env = {
+            "DATABASE_URL": "postgresql://campusquiz_app:pass@localhost:5432/db",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            args = parser.parse_args(["--status"])
+            status_url = vm.resolve_status_url(args)
+            self.assertIn("campusquiz_app", status_url)
+
+    def test_get_applied_migrations_raises_on_permission_error(self):
+        """get_applied_migrations must NOT swallow permission errors as an empty migration history."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = lambda s: mock_cursor
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+
+        # Simulate PostgreSQL 42501 InsufficientPrivilege
+        err = psycopg2.errors.InsufficientPrivilege("permission denied for table schema_migrations")
+        mock_cursor.execute.side_effect = err
+        mock_conn.cursor.return_value = mock_cursor
+
+        with self.assertRaises(psycopg2.errors.InsufficientPrivilege) as cm:
+            vm.get_applied_migrations(mock_conn)
+        self.assertIn("permission denied", str(cm.exception))
+
+    def test_get_applied_migrations_returns_empty_when_table_does_not_exist(self):
+        """get_applied_migrations returns empty dict only when relation truly does not exist (42P01)."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = lambda s: mock_cursor
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+
+        err = psycopg2.errors.UndefinedTable('relation "schema_migrations" does not exist')
+        mock_cursor.execute.side_effect = err
+        mock_conn.cursor.return_value = mock_cursor
+
+        result = vm.get_applied_migrations(mock_conn)
+        self.assertEqual(result, {})
+
+    def test_get_applied_migrations_handles_null_checksums_safely(self):
+        """Historical records with NULL checksums (e.g. migrations 01 and 02) must be returned safely."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = lambda s: mock_cursor
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = [
+            ("01_schema.sql", "2026-11-01 09:40:43+00"),
+            ("02_procedures.sql", "2026-11-01 11:32:46+00"),
+            ("03_permissions.sql", "2026-11-01 12:07:34+00"),
+        ]
+        mock_conn.cursor.return_value = mock_cursor
+
+        applied = vm.get_applied_migrations(mock_conn)
+        self.assertEqual(len(applied), 3)
+        self.assertIn("01_schema.sql", applied)
+        self.assertIn("02_procedures.sql", applied)
+        self.assertIn("03_permissions.sql", applied)
 
 
 if __name__ == "__main__":
