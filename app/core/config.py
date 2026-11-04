@@ -21,6 +21,17 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
 
+    def __init__(self, **values):
+        # Explicit keyword arguments must always take precedence over environment variables.
+        # When validation_alias uses AliasChoices, Pydantic-Settings stores env variables under
+        # the first alias ('APP_DATABASE_URL'), causing kwarg 'app_database_url' to be ignored.
+        # Normalizing to the primary alias ensures explicit kwargs win over env variables.
+        if "app_database_url" in values:
+            values["APP_DATABASE_URL"] = values.pop("app_database_url")
+        elif "DATABASE_URL" in values and "APP_DATABASE_URL" not in values:
+            values["APP_DATABASE_URL"] = values.pop("DATABASE_URL")
+        super().__init__(**values)
+
     @model_validator(mode="after")
     def validate_auth_settings(self) -> Self:
         jwt_secret = self.jwt_secret_key.get_secret_value()

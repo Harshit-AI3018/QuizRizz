@@ -104,10 +104,17 @@ class PermissionTestResult(NamedTuple):
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
-# Load .env from multiple candidate locations (project root first, then db dir)
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
-load_dotenv(os.path.join(SCRIPT_DIR, ".env"))
-load_dotenv(".env")
+# NOTE: .env loading is deferred to _load_environment() which is called only
+# from main().  Keeping load_dotenv() at module scope pollutes os.environ for
+# every test file that imports this module, causing Pydantic-Settings to pick
+# up DATABASE_URL from .env even when tests supply explicit init kwargs.
+
+
+def _load_environment() -> None:
+    """Load .env from the standard candidate locations (project root first)."""
+    load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+    load_dotenv(os.path.join(SCRIPT_DIR, ".env"))
+    load_dotenv(".env")
 
 # Production migrations only — tracked in schema_migrations.
 MIGRATION_FILES: List[MigrationItem] = [
@@ -912,6 +919,7 @@ def resolve_db_url(args) -> Optional[str]:
 
 
 def main() -> None:
+    _load_environment()
     parser = build_arg_parser()
     args = parser.parse_args()
 

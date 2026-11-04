@@ -1545,6 +1545,7 @@ class TestMigrationConnectionAndReadOnlyStatus(unittest.TestCase):
         stderr_buf = StringIO()
         with patch.dict(os.environ, env, clear=True), \
              patch("sys.argv", ["verify_and_migrate.py", "--migrate"]), \
+             patch("verify_and_migrate._load_environment"), \
              patch("verify_and_migrate.psycopg2.connect") as mock_connect, \
              patch("sys.stderr", stderr_buf), \
              self.assertRaises(SystemExit) as cm:
@@ -1706,6 +1707,40 @@ class TestMigrationConnectionAndReadOnlyStatus(unittest.TestCase):
         self.assertIn("02_procedures.sql", applied)
         self.assertIn("03_permissions.sql", applied)
 
+
+
+
+class TestModuleImportDoesNotPollutEnv(unittest.TestCase):
+    """Regression guard: importing verify_and_migrate must not call load_dotenv().
+
+    Previously, three load_dotenv() calls at module scope would mutate os.environ
+    for every test file that imported this module.  Those calls were moved into
+    _load_environment(), which is only called from main().  This test confirms
+    the import is side-effect-free for os.environ.
+    """
+
+    def test_import_does_not_set_database_url_in_env(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        # Start with a clean slate (no DATABASE_URL in env).
+        clean_env = {k: v for k, v in os.environ.items() if k not in (
+            "DATABASE_URL", "APP_DATABASE_URL", "MIGRATION_DATABASE_URL",
+        )}
+        with patch.dict(os.environ, clean_env, clear=True):
+            # Trigger a fresh import to exercise module-level code.
+            import importlib
+            import database.verify_and_migrate as vm
+            importlib.reload(vm)
+            # The environment must remain clean after the import.
+            self.assertNotIn("DATABASE_URL", os.environ,
+                             "verify_and_migrate import must not set DATABASE_URL")
+
+    def test_load_environment_is_callable_function(self) -> None:
+        """_load_environment() must be a callable function (not module-level code)."""
+        from database import verify_and_migrate as vm
+        self.assertTrue(callable(getattr(vm, "_load_environment", None)),
+                        "_load_environment() should be a function defined in the module")
 
 if __name__ == "__main__":
     loader = unittest.TestLoader()

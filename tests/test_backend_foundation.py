@@ -19,6 +19,7 @@ def make_settings(
     database_url: str = "postgresql://campusquiz_app:password@localhost/campusquiz",
 ) -> Settings:
     return Settings(
+        _env_file=None,
         app_database_url=database_url,
         jwt_secret_key="a" * 32,
         auth_hmac_secret="b" * 32,
@@ -55,6 +56,72 @@ class SettingsTests(unittest.TestCase):
             make_settings(
                 "postgresql://campusquiz_app:password@sample-pooler.neon.tech/campusquiz"
             )
+
+
+    def test_explicit_kwargs_override_env_database_url(self) -> None:
+        """Regression: explicit app_database_url kwarg must win over os.environ DATABASE_URL.
+
+        When database/verify_and_migrate.py is imported before this test suite,
+        its load_dotenv() call could previously inject DATABASE_URL into os.environ.
+        The Settings.__init__ normalisation introduced in this audit ensures that
+        an explicit kwarg always takes precedence regardless of ambient env vars.
+        """
+        import os
+        from unittest.mock import patch
+
+        # Simulate the env state that existed after verify_and_migrate was imported.
+        env_pollution = {
+            "DATABASE_URL": "postgresql://campusquiz_app:poison@evil-host.example.com/db",
+            "APP_DATABASE_URL": "postgresql://campusquiz_app:poison@evil-host.example.com/db",
+        }
+        with patch.dict(os.environ, env_pollution):
+            # The explicit kwarg must override the polluted env value.
+            settings = make_settings(
+                "postgresql://campusquiz_app:safe@localhost/campusquiz"
+            )
+        self.assertEqual(settings.async_database_url().host, "localhost")
+
+    def test_explicit_kwargs_override_env_app_database_url(self) -> None:
+        """Regression: explicit kwarg beats APP_DATABASE_URL env variable."""
+        import os
+        from unittest.mock import patch
+
+        env_pollution = {
+            "APP_DATABASE_URL": "postgresql://campusquiz_app:wrong@pooler.neon.tech/db",
+        }
+        # 'pooler' would normally be rejected – but we pass a good URL as kwarg.
+        with patch.dict(os.environ, env_pollution):
+            settings = make_settings(
+                "postgresql://campusquiz_app:safe@ep-direct.neon.tech/campusquiz"
+            )
+        self.assertNotIn("pooler", settings.async_database_url().host)
+
+    def test_rejects_non_app_role_even_with_valid_env_vars_present(self) -> None:
+        """Regression: validation still fires even when env has a valid URL."""
+        import os
+        from unittest.mock import patch
+
+        # A perfectly valid URL in the environment must not mask kwarg validation.
+        env_state = {
+            "DATABASE_URL": "postgresql://campusquiz_app:pw@localhost/campusquiz",
+        }
+        with patch.dict(os.environ, env_state):
+            with self.assertRaisesRegex(ValueError, "campusquiz_app"):
+                make_settings("postgresql://owner:password@localhost/campusquiz")
+
+    def test_rejects_pooled_endpoint_even_with_valid_env_vars_present(self) -> None:
+        """Regression: pooled-URL rejection fires regardless of env var content."""
+        import os
+        from unittest.mock import patch
+
+        env_state = {
+            "DATABASE_URL": "postgresql://campusquiz_app:pw@localhost/campusquiz",
+        }
+        with patch.dict(os.environ, env_state):
+            with self.assertRaisesRegex(ValueError, "direct, unpooled"):
+                make_settings(
+                    "postgresql://campusquiz_app:pw@sample-pooler.neon.tech/campusquiz"
+                )
 
     def test_engine_maps_sslmode_to_asyncpg(self) -> None:
         settings = make_settings(
