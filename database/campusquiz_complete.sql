@@ -1711,7 +1711,7 @@ BEGIN
                 -- Proportional partial credit formula:
                 -- Awarded = ( (c_sel / tot_correct) * marks ) - ( i_sel * penalty )
                 v_awarded := ( (v_c_sel::NUMERIC / v_tot_correct::NUMERIC) * v_q_marks::NUMERIC )
-                             - ( v_i_sel::NUMERIC * v_q_penalty::NUMERIC );
+                             - ( CASE WHEN v_i_sel > 0 THEN v_q_penalty::NUMERIC ELSE 0.000000 END );
 
                 IF v_awarded = v_q_marks THEN
                     v_is_correct := TRUE;

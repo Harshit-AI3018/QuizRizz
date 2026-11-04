@@ -589,7 +589,7 @@ class TestPermissionVerification(unittest.TestCase):
 
 class TestMigrationCatalogue(unittest.TestCase):
 
-    def test_all_seven_migration_files_present(self):
+    def test_all_eight_migration_files_present(self):
         filenames = [m.filename for m in vm.MIGRATION_FILES]
         self.assertIn("01_schema.sql", filenames)
         self.assertIn("02_procedures.sql", filenames)
@@ -598,8 +598,9 @@ class TestMigrationCatalogue(unittest.TestCase):
         self.assertIn("05_fix_for_share_of.sql", filenames)
         self.assertIn("06_fix_student_response_record.sql", filenames)
         self.assertIn("07_revoke_app_student_responses_mutation.sql", filenames)
+        self.assertIn("08_fix_multiple_select_scoring_penalty.sql", filenames)
         self.assertNotIn("test_suite.sql", filenames)
-        self.assertEqual(len(filenames), 7)
+        self.assertEqual(len(filenames), 8)
         self.assertEqual(vm.TEST_SUITE_FILE, "test_suite.sql")
 
     def test_migration_items_have_descriptions(self):

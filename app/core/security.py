@@ -124,3 +124,32 @@ def decode_token(token: str, *, expected_type: str, settings: Settings) -> dict[
     if type(payload.get("token_version")) is not int or payload["token_version"] < 1:
         raise InvalidTokenError("Invalid token version")
     return payload
+
+def create_ws_ticket_token(
+    *,
+    user_id: str,
+    college_id: str,
+    roles: list[str],
+    token_version: int,
+    settings: Settings,
+    session_id: str | None = None,
+    lifetime_seconds: int = 60,
+) -> str:
+    if lifetime_seconds > 60:
+        raise ValueError("WebSocket ticket lifetime must not exceed 60 seconds")
+    now = datetime.now(timezone.utc)
+    payload: dict[str, Any] = {
+        "sub": user_id,
+        "college_id": college_id,
+        "roles": roles,
+        "token_version": token_version,
+        "token_type": "ws_ticket",
+        "iat": now,
+        "exp": now + timedelta(seconds=lifetime_seconds),
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+        "jti": str(uuid4()),
+    }
+    if session_id is not None:
+        payload["session_id"] = session_id
+    return jwt.encode(payload, settings.jwt_secret_key.get_secret_value(), algorithm=JWT_ALGORITHM)

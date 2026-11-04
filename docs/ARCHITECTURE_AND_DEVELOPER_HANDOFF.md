@@ -60,11 +60,11 @@ A rigorous inspection of the current repository at `D:\Quiz` on branch `main` es
 * **Configuration Files**: `.env.example`, `.gitignore`, `requirements.txt`, `README.md`, `ACCOMPLISHMENTS.md`.
 
 ### Implemented Foundation and Remaining Work
-* **Backend Application**: The FastAPI foundation and Phases 2-4 (authentication, tenant-scoped administration, and question/quiz authoring) are implemented and unit-tested. Live database verification remains unverified because no database credentials are configured in this workspace. Session lifecycle, attempts, and results APIs remain unimplemented.
+* **Backend Application**: The FastAPI foundation and Phases 2-8 (authentication, tenant-scoped administration, question/quiz authoring, publishing, session lifecycle, student quiz discovery & lobby, quiz attempt execution & autosave, and quiz finalization, scoring engine & results) are implemented and unit-tested. Live database verification remains unverified because no database credentials are configured in this workspace.
 * **Frontend Application Code**: There is currently no frontend directory (e.g., Next.js, React, or Vite). The user interfaces for students, faculty, and administrators have not been scaffolded.
 
 > [!IMPORTANT]
-> **To Incoming Developers:** Phases 0-4 are implemented. Continue with **Phase 5: Publishing & Session Lifecycle Engine**.
+> **To Incoming Developers:** Phases 0-8 are implemented. Continue with **Phase 9: Real-time Proctoring, Live Session Monitoring & Faculty Control Panel**.
 
 ---
 
@@ -923,7 +923,7 @@ To ensure zero conflicts and clean code reviews:
 
 ## 19. Known Limitations, Incomplete Features & Open Decisions
 
-1. **Domain APIs & Frontend Not Yet Implemented**: The authentication service is implemented, but institutional, quiz, session, attempt, and result APIs and all UI layers remain to be built.
+1. **Remaining APIs & Frontend Not Yet Implemented**: Authentication, institutional administration, quiz authoring, publishing, and session lifecycle APIs are implemented. Student discovery, attempts, autosave, submission, results, analytics, and all UI layers remain to be built.
 2. **WebSocket Real-Time Monitoring `[PROPOSED]`**: Live student attempt monitoring currently relies on REST polling. Implementing a WebSocket or Server-Sent Events (SSE) gateway for live faculty proctoring is scheduled for Phase 9.
 3. **Session Reconnect Grace Period `[OPEN DECISION]`**: Current deadline enforcement is absolute based on `deadline TIMESTAMPTZ`. The team must decide whether a 60-second network disconnection grace period should be introduced during final auto-submission.
 4. **Question Types Expansion `[DEFERRED]`**: Coding questions, file uploads, and essay evaluations are deferred to Phase 13 (Post-MVP).

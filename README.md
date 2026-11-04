@@ -24,7 +24,8 @@
 * **Phase 2 — Authentication & Identity Service**: **`IMPLEMENTED; LIVE DB VERIFICATION PENDING`** (Argon2 login, scoped access/refresh JWTs, token-version checks, logout revocation, and database HMAC tickets).
 * **Phase 3 — Institutional Administration API**: **`IMPLEMENTED; LIVE DB VERIFICATION PENDING`** (tenant-scoped academic CRUD, faculty/student provisioning, assignments, and enrollments).
 * **Phase 4 — Question Bank & Quiz Authoring API**: **`IMPLEMENTED; LIVE DB VERIFICATION PENDING`** (role/subject-scoped questions and options, draft quizzes, ordered question assembly, and scoring overrides).
-* **Phases 5–9 — Backend APIs**: **`PLANNED`** (sessions, attempts, submission, and results).
+* **Phase 5 — Publishing & Session Lifecycle API**: **`IMPLEMENTED; LIVE DB VERIFICATION PENDING`** (quiz publishing, scheduled sessions, and stored-procedure-backed lifecycle controls).
+* **Phases 6–9 — Backend APIs**: **`PLANNED`** (student discovery, attempts, submission, and results).
 * **Phase 10 — Frontend Application**: **`PLANNED`** (Next.js / React interactive quiz engine).
 * **Phases 11–12 — Testing & Deployment**: **`PLANNED`**.
 
@@ -90,7 +91,7 @@ Configure `.env` using `.env.example`; `APP_DATABASE_URL` must use a direct Post
 python -m uvicorn app.main:app --reload
 ```
 
-The liveness endpoint is `GET /health/live`; `GET /health/ready` also checks the database connection. Phase 3 administration endpoints are under `/api/v1/admin` and require an `ADMIN` access token. Each operation is scoped to the college in the authenticated token; college provisioning is deferred until a platform-administrator role is designed. Phase 4 question and quiz authoring endpoints require a `FACULTY` or `ADMIN` token; faculty access is limited to subjects with an active faculty assignment. Authoring responses never expose answer correctness, and database reads respect the restricted role's column grant. Run the backend tests with:
+The liveness endpoint is `GET /health/live`; `GET /health/ready` also checks the database connection. Phase 3 administration endpoints are under `/api/v1/admin` and require an `ADMIN` access token. Each operation is scoped to the college in the authenticated token; college provisioning is deferred until a platform-administrator role is designed. Phase 4 question and quiz authoring endpoints require a `FACULTY` or `ADMIN` token; faculty access is limited to subjects with an active faculty assignment. Phase 5 adds `POST /api/v1/quizzes/{quiz_id}/publish`, session scheduling and listing under `/api/v1/sessions`, and activate/pause/resume/complete/cancel controls. Session lifecycle mutations call the authorized database procedures; the activation snapshot is never returned by the API. Live Neon verification remains pending. Run the backend tests with:
 
 ```powershell
 python -m unittest discover -s tests -v

@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from app.api.health import router as health_router
 from app.api.v1.api import api_router
 from app.core.config import Settings
+from app.core.ws_hub import global_room_hub
 from app.db.session import create_database_engine
 
 
@@ -18,9 +19,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         engine = create_database_engine(configured_settings)
         application.state.engine = engine
         application.state.settings = configured_settings
+        application.state.ws_hub = global_room_hub
+        await global_room_hub.start()
         try:
             yield
         finally:
+            await global_room_hub.stop()
             await engine.dispose()
 
     application = FastAPI(

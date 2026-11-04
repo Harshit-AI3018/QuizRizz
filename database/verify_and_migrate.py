@@ -125,6 +125,7 @@ MIGRATION_FILES: List[MigrationItem] = [
     MigrationItem("05_fix_for_share_of.sql", "Fix sp_start_quiz_attempt FOR SHARE OF qs (classes join)"),
     MigrationItem("06_fix_student_response_record.sql", "Fix sp_save_student_response v_saved_version record assignment"),
     MigrationItem("07_revoke_app_student_responses_mutation.sql", "Revoke Direct student_responses INSERT/UPDATE from campusquiz_app"),
+    MigrationItem("08_fix_multiple_select_scoring_penalty.sql", "Fix multiple-select scoring: apply penalty once per question, not per incorrect option"),
 ]
 
 # The verification test suite — run separately via --tests-only.
