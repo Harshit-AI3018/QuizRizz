@@ -41,3 +41,9 @@ scratch/
 .DS_Store
 Thumbs.db
 
+
+# Node.js
+node_modules/
+
+# TypeScript build cache
+*.tsbuildinfo
