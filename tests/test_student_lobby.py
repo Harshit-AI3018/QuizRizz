@@ -7,10 +7,20 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app.api.deps import require_roles
+from app.api.v1.endpoints.student import (
+    get_session_details as endpoint_get_session_details,
+    list_available_sessions as endpoint_list_available,
+    list_joined_sessions as endpoint_list_joined,
+)
 from app.main import create_app
 from app.schemas.auth import AuthenticatedUser
-from app.schemas.student import SessionJoinRequest
+from app.schemas.student import (
+    SessionJoinRequest,
+    StudentLobbyStatus,
+    StudentSessionDiscovery,
+)
 from app.services import student_service
+from pydantic import TypeAdapter, ValidationError
 
 COLLEGE_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 OTHER_COLLEGE_ID = UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")
@@ -110,6 +120,37 @@ def session_row(
     }
 
 
+def discovery_row(
+    *,
+    session_id=SESSION_ID,
+    status="SCHEDULED",
+    class_id=CLASS_ID,
+    session_code="ABCDEFG2",
+    attempt_id=None,
+    attempt_status=None,
+):
+    return {
+        "session_id": session_id,
+        "session_code": session_code,
+        "quiz_id": QUIZ_ID,
+        "quiz_title": "Physics Midterm Quiz",
+        "quiz_description": "Units 1 to 4",
+        "subject_id": SUBJECT_ID,
+        "subject_name": "Physics I",
+        "subject_code": "PHY101",
+        "class_id": class_id,
+        "class_name": "Class 10A",
+        "faculty_name": "Dr. Quiz Faculty",
+        "session_mode": "STUDENT_PACED",
+        "status": status,
+        "start_window_time": NOW,
+        "end_window_time": NOW + timedelta(hours=2),
+        "duration_minutes": 30,
+        "attempt_id": attempt_id,
+        "attempt_status": attempt_status,
+    }
+
+
 class StudentLobbySchemaTests(unittest.TestCase):
     def test_session_code_normalization_and_validation(self) -> None:
         req = SessionJoinRequest(session_code="  abcdefg2  ")
@@ -130,9 +171,14 @@ class StudentLobbySchemaTests(unittest.TestCase):
             "/api/v1/student/sessions",
             "/api/v1/student/sessions/joined",
             "/api/v1/student/sessions/join",
+            "/api/v1/student/sessions/{session_id}",
             "/api/v1/student/sessions/{session_id}/lobby",
         }
         self.assertTrue(expected_paths <= openapi["paths"].keys())
+
+        # Verify StudentSessionDiscovery exposes attempt_id
+        discovery_props = openapi["components"]["schemas"]["StudentSessionDiscovery"]["properties"]
+        self.assertIn("attempt_id", discovery_props)
 
         # Verify no snapshot_json or answer fields in student schemas
         for schema_name in ("StudentSessionDiscovery", "StudentLobbyStatus"):
@@ -204,6 +250,109 @@ class StudentDiscoveryTests(unittest.TestCase):
         self.assertEqual(len(sessions), 1)
         self.assertTrue(sessions[0]["is_joined"])
         self.assertTrue(sessions[0]["has_attempt"])
+
+    def test_available_sessions_schema_validation_with_null_attempt_id(self) -> None:
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),  # profile
+            make_result(rows=[discovery_row(attempt_id=None)]),  # query returns attempt_id=None
+        ]
+
+        raw_sessions = run_async(
+            endpoint_list_available(
+                connection=self.connection,
+                actor=self.student,
+                limit=100,
+                offset=0,
+            )
+        )
+        self.assertEqual(len(raw_sessions), 1)
+
+        # Validate against response schema without extra_forbidden error
+        adapter = TypeAdapter(list[StudentSessionDiscovery])
+        validated = adapter.validate_python(raw_sessions)
+        self.assertEqual(len(validated), 1)
+        self.assertIsNone(validated[0].attempt_id)
+        self.assertFalse(validated[0].has_attempt)
+        self.assertFalse(validated[0].is_joined)
+
+    def test_available_sessions_schema_validation_with_active_attempt_id(self) -> None:
+        active_attempt_id = UUID("77777777-7777-4777-8777-777777777777")
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),  # profile
+            make_result(rows=[discovery_row(attempt_id=active_attempt_id, attempt_status="IN_PROGRESS")]),
+        ]
+
+        raw_sessions = run_async(
+            endpoint_list_available(
+                connection=self.connection,
+                actor=self.student,
+                limit=100,
+                offset=0,
+            )
+        )
+        self.assertEqual(len(raw_sessions), 1)
+
+        adapter = TypeAdapter(list[StudentSessionDiscovery])
+        validated = adapter.validate_python(raw_sessions)
+        self.assertEqual(len(validated), 1)
+        self.assertEqual(validated[0].attempt_id, active_attempt_id)
+        self.assertTrue(validated[0].has_attempt)
+        self.assertTrue(validated[0].is_joined)
+        self.assertEqual(validated[0].attempt_status, "IN_PROGRESS")
+
+    def test_joined_sessions_schema_validation_with_attempt_id(self) -> None:
+        attempt_id = UUID("88888888-8888-4888-8888-888888888888")
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),  # profile
+            make_result(rows=[discovery_row(attempt_id=attempt_id, attempt_status="SUBMITTED")]),
+        ]
+
+        raw_sessions = run_async(
+            endpoint_list_joined(
+                connection=self.connection,
+                actor=self.student,
+                limit=100,
+                offset=0,
+            )
+        )
+        adapter = TypeAdapter(list[StudentSessionDiscovery])
+        validated = adapter.validate_python(raw_sessions)
+        self.assertEqual(len(validated), 1)
+        self.assertEqual(validated[0].attempt_id, attempt_id)
+        self.assertTrue(validated[0].has_attempt)
+        self.assertTrue(validated[0].is_joined)
+        self.assertEqual(validated[0].attempt_status, "SUBMITTED")
+
+    def test_student_session_discovery_strict_validation_rejects_extra_fields(self) -> None:
+        row = discovery_row()
+        row["has_attempt"] = False
+        row["is_joined"] = False
+        row["unexpected_extra_field"] = "malicious_payload"
+
+        adapter = TypeAdapter(list[StudentSessionDiscovery])
+        with self.assertRaises(ValidationError) as ctx:
+            adapter.validate_python([row])
+        self.assertIn("extra_forbidden", str(ctx.exception))
+
+    def test_get_session_by_id_endpoint(self) -> None:
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),  # profile
+            make_result(row=session_row(status="SCHEDULED")),  # session
+            make_result(scalar=1),  # enrollment
+            make_result(row=None),  # attempt
+        ]
+
+        details = run_async(
+            endpoint_get_session_details(
+                session_id=SESSION_ID,
+                connection=self.connection,
+                actor=self.student,
+            )
+        )
+        validated = StudentLobbyStatus.model_validate(details)
+        self.assertEqual(validated.session_id, SESSION_ID)
+        self.assertEqual(validated.lobby_status, "WAITING_FOR_TEACHER")
+        self.assertTrue(validated.is_waiting)
 
 
 class StudentLobbyJoinTests(unittest.TestCase):

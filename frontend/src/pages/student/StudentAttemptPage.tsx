@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { studentApi } from '../../api/studentApi';
 import type {
   StudentAttemptRead,
   StudentQuestion,
   StudentSavedResponse,
+  StudentAttemptStart,
 } from '../../types/student';
 import { useToast } from '../../context/ToastContext';
 import { Card } from '../../components/common/Card';
@@ -33,15 +34,73 @@ interface QuestionState {
 export const StudentAttemptPage: React.FC = () => {
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { showToast } = useToast();
 
-  const [attempt, setAttempt] = useState<StudentAttemptRead | null>(null);
-  const [questions, setQuestions] = useState<StudentQuestion[]>([]);
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState<number>(0);
-  const [answers, setAnswers] = useState<Record<string, QuestionState>>({});
+  const initialAttemptStart = (location.state as { attemptStart?: StudentAttemptStart } | null)?.attemptStart;
 
-  const [secondsRemaining, setSecondsRemaining] = useState<number | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [attempt, setAttempt] = useState<StudentAttemptRead | null>(() => {
+    if (initialAttemptStart && initialAttemptStart.attempt_id === attemptId) {
+      return {
+        attempt_id: initialAttemptStart.attempt_id,
+        session_id: initialAttemptStart.session_id,
+        status: initialAttemptStart.status as 'IN_PROGRESS' | 'FINALIZED',
+        started_at: new Date().toISOString(),
+        deadline: initialAttemptStart.deadline,
+        duration_minutes: initialAttemptStart.duration_minutes,
+        is_expired: false,
+        time_remaining_seconds: initialAttemptStart.duration_minutes * 60,
+      };
+    }
+    return null;
+  });
+
+  const [questions, setQuestions] = useState<StudentQuestion[]>(() => {
+    if (initialAttemptStart && initialAttemptStart.attempt_id === attemptId && initialAttemptStart.questions) {
+      return [...initialAttemptStart.questions].sort((a, b) => a.sequence_order - b.sequence_order);
+    }
+    return [];
+  });
+
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState<number>(0);
+
+  const [answers, setAnswers] = useState<Record<string, QuestionState>>(() => {
+    if (initialAttemptStart && initialAttemptStart.attempt_id === attemptId && initialAttemptStart.questions) {
+      const initialMap: Record<string, QuestionState> = {};
+      initialAttemptStart.questions.forEach((q) => {
+        initialMap[q.question_id] = {
+          selected_option_ids: [],
+          is_marked_for_review: false,
+          client_version: 1,
+          saveStatus: 'IDLE',
+        };
+      });
+      (initialAttemptStart.saved_responses || []).forEach((resp) => {
+        if (initialMap[resp.question_id]) {
+          initialMap[resp.question_id] = {
+            selected_option_ids: resp.selected_option_ids || [],
+            is_marked_for_review: resp.is_marked_for_review || false,
+            client_version: resp.client_version || 1,
+            saveStatus: 'SAVED',
+          };
+        }
+      });
+      return initialMap;
+    }
+    return {};
+  });
+
+  const [secondsRemaining, setSecondsRemaining] = useState<number | null>(() => {
+    if (initialAttemptStart && initialAttemptStart.attempt_id === attemptId && initialAttemptStart.deadline) {
+      const deadlineMs = new Date(initialAttemptStart.deadline).getTime();
+      return Math.max(0, Math.floor((deadlineMs - Date.now()) / 1000));
+    }
+    return null;
+  });
+
+  const [isLoading, setIsLoading] = useState<boolean>(() => {
+    return !(initialAttemptStart && initialAttemptStart.attempt_id === attemptId && initialAttemptStart.questions?.length > 0);
+  });
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -50,11 +109,44 @@ export const StudentAttemptPage: React.FC = () => {
 
   // Debounce timers per question
   const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const isSubmittingRef = useRef<boolean>(false);
+  const pendingChangesRef = useRef<Record<string, QuestionState>>({});
+
+  const flushPendingSaves = async () => {
+    Object.values(saveTimersRef.current).forEach(clearTimeout);
+    saveTimersRef.current = {};
+
+    const pending = Object.entries(pendingChangesRef.current);
+    if (pending.length > 0 && attemptId) {
+      await Promise.all(
+        pending.map(async ([questionId, stateToSave]) => {
+          try {
+            await studentApi.saveStudentResponse(attemptId, {
+              question_id: questionId,
+              selected_option_ids: stateToSave.selected_option_ids,
+              is_marked_for_review: stateToSave.is_marked_for_review,
+              client_version: stateToSave.client_version,
+              client_submitted_at: new Date().toISOString(),
+            });
+            delete pendingChangesRef.current[questionId];
+          } catch {
+            // Ignore - will be handled by submit
+          }
+        })
+      );
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      Object.values(saveTimersRef.current).forEach(clearTimeout);
+      saveTimersRef.current = {};
+    };
+  }, []);
 
   // 1. Initial Load of Attempt, Questions, and Previously Saved Responses
   const loadAttemptData = useCallback(async () => {
     if (!attemptId) return;
-    setIsLoading(true);
     setLoadError(null);
     try {
       const [attemptData, questionsData, responsesData] = await Promise.all([
@@ -99,8 +191,8 @@ export const StudentAttemptPage: React.FC = () => {
       });
 
       setAnswers(initialMap);
-    } catch {
-      setLoadError('Failed to load quiz attempt. Please refresh or check connection.');
+    } catch (err: any) {
+      setLoadError(err.message || 'Failed to load quiz attempt. Please refresh or check connection.');
     } finally {
       setIsLoading(false);
     }
@@ -130,8 +222,10 @@ export const StudentAttemptPage: React.FC = () => {
 
   // Auto-expire when timer hits 0
   const handleAutoExpire = async () => {
-    if (!attemptId || isSubmitting) return;
+    if (!attemptId || isSubmittingRef.current) return;
     setIsSubmitting(true);
+    await flushPendingSaves();
+    isSubmittingRef.current = true;
     showToast('Time has expired! Submitting your attempt...', 'info');
     try {
       await studentApi.submitAttempt(attemptId);
@@ -143,7 +237,7 @@ export const StudentAttemptPage: React.FC = () => {
 
   // 3. Answer Selection & Autosave
   const executeSave = async (questionId: string, stateToSave: QuestionState) => {
-    if (!attemptId) return;
+    if (!attemptId || isSubmittingRef.current || attempt?.status === 'FINALIZED') return;
 
     setAnswers((prev) => ({
       ...prev,
@@ -159,11 +253,17 @@ export const StudentAttemptPage: React.FC = () => {
         client_submitted_at: new Date().toISOString(),
       });
 
+      delete pendingChangesRef.current[questionId];
+
       setAnswers((prev) => ({
         ...prev,
         [questionId]: { ...prev[questionId], saveStatus: 'SAVED' },
       }));
-    } catch {
+    } catch (err: any) {
+      if (err?.status === 409 || String(err?.message || '').toLowerCase().includes('finalized')) {
+        navigate(`/student/attempts/${attemptId}/result`, { replace: true });
+        return;
+      }
       setAnswers((prev) => ({
         ...prev,
         [questionId]: { ...prev[questionId], saveStatus: 'ERROR' },
@@ -202,6 +302,8 @@ export const StudentAttemptPage: React.FC = () => {
         saveStatus: 'SAVING',
       };
 
+      pendingChangesRef.current[questionId] = nextState;
+
       // Debounce autosave by 300ms
       if (saveTimersRef.current[questionId]) {
         clearTimeout(saveTimersRef.current[questionId]);
@@ -230,6 +332,8 @@ export const StudentAttemptPage: React.FC = () => {
         saveStatus: 'SAVING',
       };
 
+      pendingChangesRef.current[questionId] = nextState;
+
       if (saveTimersRef.current[questionId]) {
         clearTimeout(saveTimersRef.current[questionId]);
       }
@@ -246,14 +350,22 @@ export const StudentAttemptPage: React.FC = () => {
 
   // 4. Final Submission
   const handleFinalSubmit = async () => {
-    if (!attemptId) return;
+    if (!attemptId || isSubmittingRef.current) return;
     setIsSubmitting(true);
+    await flushPendingSaves();
+    isSubmittingRef.current = true;
     try {
       await studentApi.submitAttempt(attemptId);
       showToast('Assessment submitted successfully!', 'success');
       navigate(`/student/attempts/${attemptId}/result`, { replace: true });
     } catch (err: any) {
+      if (err?.status === 409 || String(err?.message || '').toLowerCase().includes('finalized')) {
+        showToast('Assessment submitted successfully!', 'success');
+        navigate(`/student/attempts/${attemptId}/result`, { replace: true });
+        return;
+      }
       showToast(err.message || 'Failed to submit attempt', 'error');
+      isSubmittingRef.current = false;
       setIsSubmitting(false);
       setIsSubmitModalOpen(false);
     }

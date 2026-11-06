@@ -58,9 +58,26 @@ export function createManagedWebSocket<T = Record<string, unknown>>(
   }
 
   function getWsUrl(): string {
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+
+    if (typeof import.meta !== 'undefined' && import.meta.env) {
+      if (import.meta.env.VITE_WS_BASE_URL) {
+        const wsBase = import.meta.env.VITE_WS_BASE_URL.replace(/\/+$/, '');
+        return `${wsBase}${cleanPath}`;
+      }
+      if (import.meta.env.VITE_API_BASE_URL && /^https?:\/\//i.test(import.meta.env.VITE_API_BASE_URL)) {
+        try {
+          const apiUrl = new URL(import.meta.env.VITE_API_BASE_URL);
+          const wsProtocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+          return `${wsProtocol}//${apiUrl.host}${cleanPath}`;
+        } catch {
+          // fallback to window.location
+        }
+      }
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const cleanPath = path.startsWith('/') ? path : `/${path}`;
     return `${protocol}//${host}${cleanPath}`;
   }
 

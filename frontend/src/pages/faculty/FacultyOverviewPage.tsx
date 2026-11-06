@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { facultyApi } from '../../api/facultyApi';
-import type { QuestionRead, QuizRead } from '../../types/faculty';
+import type { QuestionRead, QuizRead, FacultyAssignment } from '../../types/faculty';
 import { Card } from '../../components/common/Card';
 import { Spinner } from '../../components/common/Spinner';
 import { ErrorDisplay } from '../../components/common/ErrorDisplay';
@@ -20,6 +20,7 @@ import {
 export const FacultyOverviewPage: React.FC = () => {
   const [questions, setQuestions] = useState<QuestionRead[]>([]);
   const [quizzes, setQuizzes] = useState<QuizRead[]>([]);
+  const [assignments, setAssignments] = useState<FacultyAssignment[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,9 +29,10 @@ export const FacultyOverviewPage: React.FC = () => {
     setError(null);
 
     try {
-      const [questionsRes, quizzesRes] = await Promise.allSettled([
+      const [questionsRes, quizzesRes, assignmentsRes] = await Promise.allSettled([
         facultyApi.listQuestions({ limit: 500 }),
         facultyApi.listQuizzes({ limit: 500 }),
+        facultyApi.listAssignments(),
       ]);
 
       if (questionsRes.status === 'fulfilled') {
@@ -38,6 +40,9 @@ export const FacultyOverviewPage: React.FC = () => {
       }
       if (quizzesRes.status === 'fulfilled') {
         setQuizzes(quizzesRes.value);
+      }
+      if (assignmentsRes.status === 'fulfilled') {
+        setAssignments(assignmentsRes.value);
       }
 
       if (questionsRes.status === 'rejected' && quizzesRes.status === 'rejected') {
@@ -164,22 +169,25 @@ export const FacultyOverviewPage: React.FC = () => {
         </Card>
       </div>
 
-      {/* Backend Limitation Notice for Class Assignments */}
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start gap-3">
-        <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-        <div className="text-sm text-blue-900">
-          <p className="font-semibold">Faculty Class & Subject Assignments</p>
-          <p className="mt-0.5 text-blue-700">
-            Official faculty-to-class assignments are configured by College Administrators.
-            Quizzes and questions are organized by Subject UUID.
-          </p>
-          <Link
-            to="/faculty/assignments"
-            className="inline-flex items-center text-xs font-semibold text-blue-700 hover:text-blue-900 mt-2 underline"
-          >
-            View assignments info &rarr;
-          </Link>
+      {/* Faculty Class & Subject Assignments Status */}
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+          <div className="text-sm text-blue-900">
+            <p className="font-semibold">Faculty Class & Subject Assignments</p>
+            <p className="mt-0.5 text-blue-700">
+              {assignments.length > 0
+                ? `You are actively assigned to ${assignments.length} class and subject ${assignments.length === 1 ? 'context' : 'contexts'}. Questions and quizzes created will be scoped to these courses.`
+                : 'No active subject assignments found. Please contact your college administrator to assign you to your teaching courses.'}
+            </p>
+          </div>
         </div>
+        <Link
+          to="/faculty/assignments"
+          className="inline-flex items-center text-xs font-semibold text-blue-700 hover:text-blue-900 underline whitespace-nowrap"
+        >
+          View assignments &rarr;
+        </Link>
       </div>
 
       {/* Two Column Section: Recent Quizzes and Recent Questions */}

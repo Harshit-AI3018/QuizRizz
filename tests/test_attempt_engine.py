@@ -280,6 +280,98 @@ class AttemptEngineStartTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 403)
         self.assertIn("not actively enrolled", ctx.exception.detail)
 
+    @patch("app.services.student_service.create_actor_ticket", return_value="hmac_ticket")
+    def test_start_attempt_does_not_modify_session_schedule(self, _ticket: MagicMock) -> None:
+        """Security: student-triggered start_quiz_attempt must NOT UPDATE quiz_sessions."""
+        session_row = {
+            "id": SESSION_ID,
+            "status": "ACTIVE",
+            "class_id": CLASS_ID,
+            "duration_minutes": 25,
+        }
+        sp_result = {
+            "attempt_id": ATTEMPT_ID,
+            "status": "IN_PROGRESS",
+            "deadline": DEADLINE,
+            "duration_minutes": 25,
+            "snapshot_questions": sample_snapshot_questions(),
+        }
+
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),   # student profile exists
+            make_result(row=session_row),  # session is active
+            make_result(scalar=1),   # student enrolled
+            make_result(row=None),   # no existing finalized attempt
+            make_result(row=sp_result),   # sp_start_quiz_attempt
+            make_result(rows=[]),    # saved responses empty
+        ]
+
+        run_async(
+            student_service.start_quiz_attempt(
+                self.connection, self.student, SESSION_ID, self.settings
+            )
+        )
+
+        # Assert that none of the SQL calls issued an UPDATE to quiz_sessions
+        for call_args in self.connection.execute.await_args_list:
+            stmt = str(call_args.args[0]).lower()
+            self.assertNotIn(
+                "update quiz_sessions",
+                stmt,
+                msg="start_quiz_attempt must not issue UPDATE quiz_sessions (session schedule is teacher-only)",
+            )
+
+    @patch("app.services.student_service.create_actor_ticket", return_value="hmac_ticket")
+    def test_start_attempt_schedule_window_error_no_session_mutation(self, _ticket: MagicMock) -> None:
+        """Security: when sp_start_quiz_attempt raises a DBAPIError (e.g. schedule window),
+        no UPDATE quiz_sessions is issued before the error — the student cannot mutate session state."""
+        from sqlalchemy.exc import DBAPIError
+
+        session_row = {
+            "id": SESSION_ID,
+            "status": "ACTIVE",
+            "class_id": CLASS_ID,
+            "duration_minutes": 25,
+        }
+
+        # Simulate the stored procedure raising a P0001 with schedule window message.
+        # Build orig with the pgcode that _procedure_http_error checks.
+        orig_exc = MagicMock()
+        orig_exc.pgcode = "P0001"
+        orig_exc.sqlstate = "P0001"
+        orig_exc.message = "Current time is outside session schedule window"
+        orig_exc.__str__ = MagicMock(return_value="Current time is outside session schedule window")
+        sp_error = DBAPIError("SELECT sp_start_quiz_attempt(...)", {}, orig_exc)
+        sp_error.orig = orig_exc
+
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),       # student profile exists
+            make_result(row=session_row),  # session is active
+            make_result(scalar=1),       # student enrolled
+            make_result(row=None),       # no existing finalized attempt
+            sp_error,                    # sp_start_quiz_attempt raises schedule error
+        ]
+
+        with self.assertRaises(HTTPException) as ctx:
+            run_async(
+                student_service.start_quiz_attempt(
+                    self.connection, self.student, SESSION_ID, self.settings
+                )
+            )
+
+        # _procedure_http_error maps "schedule window" + P0001 → 409
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("schedule window", ctx.exception.detail.lower())
+
+        # Core security invariant: no UPDATE to quiz_sessions was issued
+        for call_args in self.connection.execute.await_args_list:
+            stmt = str(call_args.args[0]).lower()
+            self.assertNotIn(
+                "update quiz_sessions",
+                stmt,
+                msg="start_quiz_attempt must not issue UPDATE quiz_sessions (session schedule is teacher-only)",
+            )
+
 
 class ResponseAutosaveTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -331,6 +423,8 @@ class ResponseAutosaveTests(unittest.TestCase):
         # Verify call parameters
         proc_call = str(self.connection.execute.await_args_list[2].args[0])
         self.assertIn("sp_save_student_response", proc_call)
+        self.assertIn("result_status AS sync_status", proc_call)
+        self.assertIn("CAST(:selected_option_ids AS UUID[])", proc_call)
         self.connection.commit.assert_awaited_once()
 
     @patch("app.services.student_service.create_actor_ticket", return_value="hmac_ticket")
@@ -369,6 +463,61 @@ class ResponseAutosaveTests(unittest.TestCase):
 
         self.assertEqual(res["sync_status"], "ACCEPTED")
         self.assertEqual(res["persisted_version"], 2)
+
+    @patch("app.services.student_service.create_actor_ticket", return_value="hmac_ticket")
+    def test_save_responses_for_multiple_separate_questions(self, _ticket: MagicMock) -> None:
+        """Autosave saves responses for multiple questions independently without cross-contamination."""
+        attempt_row = {
+            "attempt_id": ATTEMPT_ID,
+            "session_id": SESSION_ID,
+            "status": "IN_PROGRESS",
+            "started_at": NOW,
+            "deadline": NOW + timedelta(minutes=20),
+            "duration_minutes": 25,
+        }
+        sp_result_q1 = {"sync_status": "ACCEPTED", "persisted_version": 1}
+        sp_result_q2 = {"sync_status": "ACCEPTED", "persisted_version": 1}
+
+        # First question save
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),
+            make_result(row=attempt_row),
+            make_result(row=sp_result_q1),
+        ]
+        req_q1 = StudentResponseSaveRequest(
+            question_id=QUESTION_ID,
+            selected_option_ids=[OPTION_1],
+            is_marked_for_review=False,
+            client_version=1,
+        )
+        res_q1 = run_async(
+            student_service.save_student_response(
+                self.connection, self.student, ATTEMPT_ID, req_q1, self.settings
+            )
+        )
+        self.assertEqual(res_q1["question_id"], QUESTION_ID)
+        self.assertEqual(res_q1["sync_status"], "ACCEPTED")
+
+        # Second question save with different question_id
+        q2_id = UUID("33333333-3333-4333-8333-333333333333")
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),
+            make_result(row=attempt_row),
+            make_result(row=sp_result_q2),
+        ]
+        req_q2 = StudentResponseSaveRequest(
+            question_id=q2_id,
+            selected_option_ids=[OPTION_2],
+            is_marked_for_review=True,
+            client_version=1,
+        )
+        res_q2 = run_async(
+            student_service.save_student_response(
+                self.connection, self.student, ATTEMPT_ID, req_q2, self.settings
+            )
+        )
+        self.assertEqual(res_q2["question_id"], q2_id)
+        self.assertEqual(res_q2["sync_status"], "ACCEPTED")
 
     def test_cannot_save_response_for_another_student_attempt(self) -> None:
         # Attempt not found under this student's scope
@@ -586,6 +735,42 @@ class ResponseAutosaveTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 422)
         self.assertIn("permit at most 1", ctx.exception.detail)
 
+    def test_save_student_response_rejected_if_already_finalized(self) -> None:
+        """Autosave must reject responses for FINALIZED attempts with HTTP 409."""
+        attempt_row = {
+            "attempt_id": ATTEMPT_ID,
+            "session_id": SESSION_ID,
+            "student_user_id": STUDENT_ID,
+            "status": "FINALIZED",
+            "started_at": NOW - timedelta(minutes=20),
+            "deadline": NOW + timedelta(minutes=10),
+            "duration_minutes": 30,
+            "finalized_at": NOW,
+            "submission_type": "MANUAL",
+            "total_score": Decimal("10.00"),
+        }
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),  # profile exists
+            make_result(row=attempt_row),  # attempt fetch
+        ]
+
+        req = StudentResponseSaveRequest(
+            question_id=QUESTION_ID,
+            selected_option_ids=[OPTION_1],
+            is_marked_for_review=False,
+            client_version=1,
+        )
+
+        with self.assertRaises(HTTPException) as ctx:
+            run_async(
+                student_service.save_student_response(
+                    self.connection, self.student, ATTEMPT_ID, req, self.settings
+                )
+            )
+
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("Cannot save response: Attempt is already FINALIZED", ctx.exception.detail)
+
 
 class AttemptRetrievalTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -617,37 +802,41 @@ class AttemptRetrievalTests(unittest.TestCase):
         self.assertGreater(attempt["time_remaining_seconds"], 500)
 
     def test_get_attempt_questions_strips_correct_answers(self) -> None:
-        snapshot_json = {
-            "questions": [
-                {
-                    "question_id": str(QUESTION_ID),
-                    "sequence_order": 1,
-                    "question_type": "MCQ",
-                    "question_text": "Is this secure?",
-                    "marks": "5.00",
-                    "negative_penalty": "1.00",
-                    "explanation": "SECRET EXPLANATION",
-                    "options": [
-                        {
-                            "option_id": str(OPTION_1),
-                            "option_text": "Yes",
-                            "display_order": 1,
-                            "is_correct": True,
-                        },
-                        {
-                            "option_id": str(OPTION_2),
-                            "option_text": "No",
-                            "display_order": 2,
-                            "is_correct": False,
-                        },
-                    ],
-                }
-            ]
-        }
+        # Test that the relational query path never exposes is_correct or explanation.
+        # The old snapshot_json code path has been removed; correct answers were never
+        # in the relational query columns, so this test verifies the structural guarantee.
+        relational_rows = [
+            {
+                "attempt_id": ATTEMPT_ID,
+                "question_id": QUESTION_ID,
+                "sequence_order": 1,
+                "question_type": "MCQ",
+                "question_text": "Is this secure?",
+                "marks": Decimal("5.00"),
+                "negative_penalty": Decimal("1.0000"),
+                "option_id": OPTION_1,
+                "option_text": "Yes",
+                "display_order": 1,
+                # Note: is_correct and explanation are intentionally absent
+                # (they are REVOKED at the column level for campusquiz_app role)
+            },
+            {
+                "attempt_id": ATTEMPT_ID,
+                "question_id": QUESTION_ID,
+                "sequence_order": 1,
+                "question_type": "MCQ",
+                "question_text": "Is this secure?",
+                "marks": Decimal("5.00"),
+                "negative_penalty": Decimal("1.0000"),
+                "option_id": OPTION_2,
+                "option_text": "No",
+                "display_order": 2,
+            },
+        ]
 
         self.connection.execute.side_effect = [
-            make_result(scalar=1),  # profile
-            make_result(row={"snapshot_json": snapshot_json}),  # snapshot
+            make_result(scalar=1),             # profile exists
+            make_result(rows=relational_rows), # relational query returns rows without is_correct
         ]
 
         questions = run_async(
@@ -656,9 +845,14 @@ class AttemptRetrievalTests(unittest.TestCase):
 
         self.assertEqual(len(questions), 1)
         q = questions[0]
+        # Sensitive fields must not be present in the output
         self.assertNotIn("explanation", q)
+        self.assertNotIn("is_correct", q)
         for opt in q["options"]:
             self.assertNotIn("is_correct", opt)
+        # Confirm snapshot_json is not in the executed SQL
+        executed_sql = str(self.connection.execute.await_args_list[1].args[0])
+        self.assertNotIn("snapshot_json", executed_sql)
 
     def test_get_saved_responses_preserves_student_answers(self) -> None:
         saved_rows = [
@@ -697,6 +891,79 @@ class AttemptRetrievalTests(unittest.TestCase):
         self.assertEqual(responses[0]["selected_option_ids"], [OPTION_1])
         self.assertTrue(responses[0]["is_marked_for_review"])
         self.assertEqual(responses[0]["client_version"], 2)
+
+    def test_get_attempt_questions_via_relational_tables_without_snapshot_json(self) -> None:
+        relational_rows = [
+            {
+                "attempt_id": ATTEMPT_ID,
+                "question_id": QUESTION_ID,
+                "sequence_order": 1,
+                "question_type": "MCQ",
+                "question_text": "What is the speed of light in vacuum?",
+                "marks": Decimal("4.00"),
+                "negative_penalty": Decimal("1.0000"),
+                "option_id": OPTION_1,
+                "option_text": "3 x 10^8 m/s",
+                "display_order": 1,
+            },
+            {
+                "attempt_id": ATTEMPT_ID,
+                "question_id": QUESTION_ID,
+                "sequence_order": 1,
+                "question_type": "MCQ",
+                "question_text": "What is the speed of light in vacuum?",
+                "marks": Decimal("4.00"),
+                "negative_penalty": Decimal("1.0000"),
+                "option_id": OPTION_2,
+                "option_text": "3 x 10^6 m/s",
+                "display_order": 2,
+            },
+        ]
+
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),  # profile exists
+            make_result(rows=relational_rows),  # relational query without snapshot_json
+        ]
+
+        questions = run_async(
+            student_service.get_attempt_questions(self.connection, self.student, ATTEMPT_ID)
+        )
+
+        self.assertEqual(len(questions), 1)
+        q = questions[0]
+        self.assertEqual(q["question_id"], QUESTION_ID)
+        self.assertEqual(q["sequence_order"], 1)
+        self.assertEqual(q["question_type"], "MCQ")
+        self.assertEqual(q["marks"], Decimal("4.00"))
+        self.assertEqual(q["negative_penalty"], Decimal("1.0000"))
+        self.assertEqual(len(q["options"]), 2)
+        self.assertEqual(q["options"][0]["option_id"], OPTION_1)
+        self.assertEqual(q["options"][1]["option_id"], OPTION_2)
+
+        # Confirm neither options nor question expose answers or explanations
+        self.assertNotIn("explanation", q)
+        for opt in q["options"]:
+            self.assertNotIn("is_correct", opt)
+
+        # Confirm the query did NOT touch quiz_sessions.snapshot_json
+        executed_sql = str(self.connection.execute.await_args_list[1].args[0])
+        self.assertNotIn("snapshot_json", executed_sql)
+        self.assertIn("quiz_attempts", executed_sql)
+        self.assertIn("question_options", executed_sql)
+
+    def test_get_attempt_questions_attempt_not_found_raises_404(self) -> None:
+        self.connection.execute.side_effect = [
+            make_result(scalar=1),  # profile exists
+            make_result(rows=[]),   # no question rows found
+            make_result(row=None),  # attempt check returns None
+        ]
+
+        with self.assertRaises(HTTPException) as ctx:
+            run_async(
+                student_service.get_attempt_questions(self.connection, self.student, ATTEMPT_ID)
+            )
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertIn("Quiz attempt not found", ctx.exception.detail)
 
 
 if __name__ == "__main__":

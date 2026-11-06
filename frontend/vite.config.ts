@@ -21,6 +21,7 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: backendTarget,
           changeOrigin: true,
+          ws: true,
         },
         '/ws': {
           target: backendWsTarget,
@@ -34,6 +35,7 @@ export default defineConfig(({ mode }) => {
       environment: 'jsdom',
       setupFiles: './src/test/setup.ts',
       css: false,
+      include: ['src/**/*.{test,spec}.{ts,tsx}'],
     },
   };
 });

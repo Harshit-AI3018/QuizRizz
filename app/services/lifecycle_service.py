@@ -475,6 +475,21 @@ async def transition_session(
         )
 
     # 4. Generate actor ticket and execute stored procedure
+    now = datetime.now(timezone.utc)
+    if normalized_action in ("activate", "start"):
+        start_time = session.get("start_window_time")
+        if start_time and start_time > now:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE quiz_sessions
+                    SET start_window_time = :now
+                    WHERE id = :session_id AND college_id = :college_id
+                    """
+                ),
+                {"now": now, "session_id": session_id, "college_id": actor.college_id},
+            )
+
     signature = create_actor_ticket(
         user_id=str(actor.id),
         token_version=actor.token_version,
@@ -581,9 +596,12 @@ async def get_session_results(
     meta_res = await connection.execute(
         text(
             """
-            SELECT q.title AS quiz_title, c.name AS class_name
-            FROM quizzes q, classes c
-            WHERE q.id = :quiz_id AND c.id = :class_id
+            SELECT q.title AS quiz_title,
+                   CONCAT(b.name, ' - Year ', c.year_of_study, ', Sem ', c.semester, ', Sec ', c.section) AS class_name
+            FROM quizzes q
+            JOIN classes c ON c.id = :class_id AND c.college_id = q.college_id
+            JOIN branches b ON b.id = c.branch_id AND b.college_id = c.college_id
+            WHERE q.id = :quiz_id
             """
         ),
         {"quiz_id": session["quiz_id"], "class_id": session["class_id"]},

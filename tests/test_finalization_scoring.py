@@ -926,6 +926,158 @@ class ConcurrencyAndAtomicityTests(unittest.TestCase):
         self.assertEqual(result["total_score"], Decimal("22.50"))
         self.assertEqual(result["status"], "FINALIZED")
 
+    @patch("app.services.student_service.create_actor_ticket", return_value="any_ticket")
+    def test_finalize_student_attempt_uses_role_any_for_sp_get_student_attempt_results(self, mock_ticket):
+        """Finalize attempt must generate HMAC ticket with role='ANY' for sp_get_student_attempt_results."""
+        finalized_row = {
+            "final_status": "FINALIZED",
+            "total_score": Decimal("18.00"),
+            "finalized_at": NOW,
+        }
+        res_check = {
+            "is_results_released": True,
+            "total_score": Decimal("18.00"),
+        }
+        attempt_row = {
+            "attempt_id": ATTEMPT_ID,
+            "session_id": SESSION_ID,
+            "student_user_id": STUDENT_ID,
+            "status": "IN_PROGRESS",
+            "started_at": NOW - timedelta(minutes=20),
+            "deadline": NOW + timedelta(minutes=10),
+            "duration_minutes": 30,
+            "is_expired": False,
+            "time_remaining_seconds": 600,
+        }
+        with patch("app.services.student_service.get_attempt", new=AsyncMock(return_value=attempt_row)):
+            self.connection.execute.side_effect = [
+                make_result(row=finalized_row),
+                make_result(row=res_check),
+            ]
+            result = run_async(
+                student_service.finalize_student_attempt(
+                    self.connection,
+                    self.student,
+                    ATTEMPT_ID,
+                    self.settings,
+                )
+            )
+
+        self.assertEqual(result["status"], "FINALIZED")
+        self.assertEqual(result["total_score"], Decimal("18.00"))
+        # Verify role="ANY" was passed to create_actor_ticket
+        ticket_calls = mock_ticket.call_args_list
+        self.assertTrue(any(call.kwargs.get("role") == "ANY" for call in ticket_calls))
+
+    @patch("app.services.student_service.create_actor_ticket", return_value="any_ticket")
+    def test_finalize_student_attempt_retry_uses_role_any(self, mock_ticket):
+        """Retrying already-finalized attempt must use role='ANY' for sp_get_student_attempt_results."""
+        already_finalized_attempt = {
+            "attempt_id": ATTEMPT_ID,
+            "session_id": SESSION_ID,
+            "student_user_id": STUDENT_ID,
+            "status": "FINALIZED",
+            "started_at": NOW - timedelta(minutes=30),
+            "deadline": NOW - timedelta(minutes=5),
+            "duration_minutes": 30,
+            "finalized_at": NOW - timedelta(minutes=5),
+            "submission_type": "MANUAL",
+            "total_score": Decimal("15.00"),
+            "is_expired": True,
+            "time_remaining_seconds": 0,
+        }
+        res_row = {
+            "is_results_released": True,
+            "total_score": Decimal("15.00"),
+        }
+
+        with patch("app.services.student_service.get_attempt", new=AsyncMock(return_value=already_finalized_attempt)):
+            self.connection.execute.return_value = make_result(row=res_row)
+            result = run_async(
+                student_service.finalize_student_attempt(
+                    self.connection,
+                    self.student,
+                    ATTEMPT_ID,
+                    self.settings,
+                )
+            )
+
+        self.assertEqual(result["status"], "FINALIZED")
+        self.assertEqual(result["total_score"], Decimal("15.00"))
+        mock_ticket.assert_called_once_with(
+            user_id=str(self.student.id),
+            token_version=self.student.token_version,
+            role="ANY",
+            settings=self.settings,
+        )
+
+    def test_finalize_student_attempt_resilient_to_results_error(self):
+        """If sp_get_student_attempt_results fails after commit, attempt remains finalized without 500."""
+        finalized_row = {
+            "final_status": "FINALIZED",
+            "total_score": Decimal("20.00"),
+            "finalized_at": NOW,
+        }
+        attempt_row = {
+            "attempt_id": ATTEMPT_ID,
+            "session_id": SESSION_ID,
+            "student_user_id": STUDENT_ID,
+            "status": "IN_PROGRESS",
+            "started_at": NOW - timedelta(minutes=20),
+            "deadline": NOW + timedelta(minutes=10),
+            "duration_minutes": 30,
+            "is_expired": False,
+            "time_remaining_seconds": 600,
+        }
+        with patch("app.services.student_service.get_attempt", new=AsyncMock(return_value=attempt_row)):
+            self.connection.execute.side_effect = [
+                make_result(row=finalized_row),
+                Exception("PostgreSQL error: Invalid auth signature"),
+            ]
+            result = run_async(
+                student_service.finalize_student_attempt(
+                    self.connection,
+                    self.student,
+                    ATTEMPT_ID,
+                    self.settings,
+                )
+            )
+
+        self.assertEqual(result["status"], "FINALIZED")
+        self.assertIsNone(result["total_score"])
+        self.assertFalse(result["is_results_released"])
+
+    def test_finalize_student_attempt_retry_resilient_to_results_error(self):
+        """Retrying already-finalized attempt survives results query failure without 500."""
+        already_finalized_attempt = {
+            "attempt_id": ATTEMPT_ID,
+            "session_id": SESSION_ID,
+            "student_user_id": STUDENT_ID,
+            "status": "FINALIZED",
+            "started_at": NOW - timedelta(minutes=30),
+            "deadline": NOW - timedelta(minutes=5),
+            "duration_minutes": 30,
+            "finalized_at": NOW - timedelta(minutes=5),
+            "submission_type": "MANUAL",
+            "total_score": Decimal("15.00"),
+            "is_expired": True,
+            "time_remaining_seconds": 0,
+        }
+
+        with patch("app.services.student_service.get_attempt", new=AsyncMock(return_value=already_finalized_attempt)):
+            self.connection.execute.side_effect = Exception("PostgreSQL error: Invalid auth signature")
+            result = run_async(
+                student_service.finalize_student_attempt(
+                    self.connection,
+                    self.student,
+                    ATTEMPT_ID,
+                    self.settings,
+                )
+            )
+
+        self.assertEqual(result["status"], "FINALIZED")
+        self.assertIsNone(result["total_score"])
+
 
 class TimeoutSweeperTests(unittest.TestCase):
     def setUp(self) -> None:

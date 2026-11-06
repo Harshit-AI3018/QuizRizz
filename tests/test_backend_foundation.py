@@ -15,6 +15,23 @@ from app.db.sp_caller import call_database_function
 from app.main import create_app
 
 
+def run_async(coro):
+    """Run an async coroutine synchronously without socket-based event loops."""
+    gen = coro.__await__()
+    val = None
+    exc = None
+    while True:
+        try:
+            if exc:
+                future = gen.throw(exc)
+            else:
+                future = gen.send(val)
+            val = None
+            exc = None
+        except StopIteration as e:
+            return e.value
+
+
 def make_settings(
     database_url: str = "postgresql://campusquiz_app:password@localhost/campusquiz",
 ) -> Settings:
@@ -48,7 +65,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_missing_bearer_token_is_rejected_before_database_access(self) -> None:
         with self.assertRaises(HTTPException) as raised:
-            asyncio.run(get_access_token_payload(None, make_settings()))
+            run_async(get_access_token_payload(None, make_settings()))
         self.assertEqual(raised.exception.status_code, 401)
 
     def test_rejects_pooled_database_endpoint(self) -> None:
@@ -56,6 +73,23 @@ class SettingsTests(unittest.TestCase):
             make_settings(
                 "postgresql://campusquiz_app:password@sample-pooler.neon.tech/campusquiz"
             )
+
+    def test_cors_origins_parses_comma_separated_string(self) -> None:
+        settings = make_settings()
+        self.assertIn("https://campusquiz.pages.dev", settings.cors_origins)
+        custom = Settings(
+            _env_file=None,
+            app_database_url="postgresql://campusquiz_app:password@localhost/campusquiz",
+            jwt_secret_key="a" * 32,
+            auth_hmac_secret="b" * 32,
+            cors_origins="https://example.com, https://app.example.com",
+        )
+        self.assertEqual(custom.cors_origins, ["https://example.com", "https://app.example.com"])
+
+    def test_cors_middleware_is_configured_on_app(self) -> None:
+        app = create_app(make_settings())
+        middleware_classes = [m.cls.__name__ for m in app.user_middleware]
+        self.assertIn("CORSMiddleware", middleware_classes)
 
 
     def test_explicit_kwargs_override_env_database_url(self) -> None:
@@ -132,11 +166,11 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(engine.url.drivername, "postgresql+asyncpg")
             self.assertNotIn("sslmode", engine.url.query)
         finally:
-            asyncio.run(engine.dispose())
+            run_async(engine.dispose())
 
 
-class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self) -> None:
+class HealthRouteTests(unittest.TestCase):
+    def setUp(self) -> None:
         self.connection = MagicMock()
         self.connection.execute = AsyncMock(return_value=MagicMock())
         self.engine = MagicMock()
@@ -155,41 +189,53 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
         self.engine_patch.start()
         self.addCleanup(self.engine_patch.stop)
 
-    async def test_liveness_does_not_depend_on_database(self) -> None:
-        async with self.application.router.lifespan_context(self.application):
-            response = await liveness()
+    def test_liveness_does_not_depend_on_database(self) -> None:
+        async def run_test():
+            async with self.application.router.lifespan_context(self.application):
+                return await liveness()
+
+        response = run_async(run_test())
         self.assertEqual(response, {"status": "alive"})
         self.connection.execute.assert_not_awaited()
 
-    async def test_readiness_checks_database(self) -> None:
-        async with self.application.router.lifespan_context(self.application):
-            response = await readiness(self.engine)
+    def test_readiness_checks_database(self) -> None:
+        async def run_test():
+            async with self.application.router.lifespan_context(self.application):
+                return await readiness(self.engine)
+
+        response = run_async(run_test())
         self.assertEqual(response, {"status": "ready"})
         self.connection.execute.assert_awaited_once()
 
-    async def test_readiness_reports_database_failure_as_unavailable(self) -> None:
+    def test_readiness_reports_database_failure_as_unavailable(self) -> None:
         self.connection.execute.side_effect = OperationalError(
             "SELECT 1",
             {},
             RuntimeError("offline"),
         )
 
-        async with self.application.router.lifespan_context(self.application):
-            with self.assertLogs("app.api.health", level="ERROR"):
-                with self.assertRaises(HTTPException) as raised:
-                    await readiness(self.engine)
+        async def run_test():
+            async with self.application.router.lifespan_context(self.application):
+                return await readiness(self.engine)
+
+        with self.assertLogs("app.api.health", level="ERROR"):
+            with self.assertRaises(HTTPException) as raised:
+                run_async(run_test())
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(raised.exception.detail, "Database unavailable")
 
-    async def test_readiness_reports_connection_failure_as_unavailable(self) -> None:
+    def test_readiness_reports_connection_failure_as_unavailable(self) -> None:
         self.engine.connect = MagicMock(
             side_effect=ConnectionRefusedError("database is offline")
         )
 
-        async with self.application.router.lifespan_context(self.application):
-            with self.assertLogs("app.api.health", level="ERROR"):
-                with self.assertRaises(HTTPException) as raised:
-                    await readiness(self.engine)
+        async def run_test():
+            async with self.application.router.lifespan_context(self.application):
+                return await readiness(self.engine)
+
+        with self.assertLogs("app.api.health", level="ERROR"):
+            with self.assertRaises(HTTPException) as raised:
+                run_async(run_test())
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(raised.exception.detail, "Database unavailable")
 
@@ -206,8 +252,8 @@ class HealthRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("/auth/login", paths)
 
 
-class DatabaseFunctionCallerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_executes_parameterized_function_and_returns_one_row(self) -> None:
+class DatabaseFunctionCallerTests(unittest.TestCase):
+    def test_executes_parameterized_function_and_returns_one_row(self) -> None:
         connection = MagicMock()
         connection.execute = AsyncMock()
         result = MagicMock()
@@ -220,7 +266,7 @@ class DatabaseFunctionCallerTests(unittest.IsolatedAsyncioTestCase):
             "sig": "ticket",
         }
 
-        row = await call_database_function(connection, statement, parameters)
+        row = run_async(call_database_function(connection, statement, parameters))
 
         self.assertEqual(row, {"attempt_id": "attempt-1"})
         connection.execute.assert_awaited_once_with(statement, parameters)

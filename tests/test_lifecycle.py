@@ -509,6 +509,54 @@ class LifecycleTransitionsTests(unittest.TestCase):
         self.assertEqual(parameters["college_id"], COLLEGE_ID)
         self.assertEqual(parameters["actor_id"], FACULTY_ID)
 
+    @patch("app.services.lifecycle_service.create_actor_ticket", return_value="ticket")
+    def test_activate_session_aligns_future_start_window(self, _ticket: MagicMock) -> None:
+        """Security/correctness: teacher-triggered activation should UPDATE start_window_time
+        when it is set to a future time, so sp_activate_quiz_session's schedule check passes."""
+        future_start = NOW + timedelta(hours=2)
+        scheduled = session_row(status="SCHEDULED")
+        scheduled["start_window_time"] = future_start  # future start window
+
+        self.connection.execute.side_effect = [
+            make_result(row=scheduled),         # fetch current session
+            make_result(row=None),              # UPDATE start_window_time (returns nothing)
+            make_result(scalar="ACTIVE"),       # sp_activate_quiz_session
+            make_result(row=session_row(status="ACTIVE")),  # re-fetch after activation
+        ]
+
+        result = run_async(lifecycle_service.transition_session(
+            self.connection, self.actor, SESSION_ID, "activate", self.settings
+        ))
+        self.assertEqual(result["status"], "ACTIVE")
+
+        # Verify that one of the execute calls updated start_window_time
+        all_stmts = [str(call.args[0]).lower() for call in self.connection.execute.await_args_list]
+        update_calls = [s for s in all_stmts if "update quiz_sessions" in s and "start_window_time" in s]
+        self.assertEqual(len(update_calls), 1, "Expected exactly one UPDATE quiz_sessions SET start_window_time from lifecycle activation")
+
+    @patch("app.services.lifecycle_service.create_actor_ticket", return_value="ticket")
+    def test_activate_session_does_not_update_start_window_when_already_in_past(self, _ticket: MagicMock) -> None:
+        """When start_window_time is already in the past (or now), no UPDATE should be issued."""
+        past_start = NOW - timedelta(hours=1)
+        scheduled = session_row(status="SCHEDULED")
+        scheduled["start_window_time"] = past_start
+
+        self.connection.execute.side_effect = [
+            make_result(row=scheduled),         # fetch current session
+            make_result(scalar="ACTIVE"),       # sp_activate_quiz_session (no UPDATE first)
+            make_result(row=session_row(status="ACTIVE")),  # re-fetch
+        ]
+
+        result = run_async(lifecycle_service.transition_session(
+            self.connection, self.actor, SESSION_ID, "activate", self.settings
+        ))
+        self.assertEqual(result["status"], "ACTIVE")
+
+        # No UPDATE quiz_sessions SET start_window_time should have occurred
+        all_stmts = [str(call.args[0]).lower() for call in self.connection.execute.await_args_list]
+        update_calls = [s for s in all_stmts if "update quiz_sessions" in s and "start_window_time" in s]
+        self.assertEqual(len(update_calls), 0, "Should not UPDATE start_window_time when it is already in the past")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -36,6 +36,7 @@ export interface StudentSessionDiscovery {
   duration_minutes: number;
   is_joined: boolean;
   has_attempt: boolean;
+  attempt_id?: string | null;
   attempt_status: string | null;
 }
 

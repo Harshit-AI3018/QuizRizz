@@ -24,6 +24,23 @@ ADMIN_ID = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 USER_ID = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 
 
+def run_async(coro):
+    """Run an async coroutine synchronously without socket-based event loops."""
+    gen = coro.__await__()
+    val = None
+    exc = None
+    while True:
+        try:
+            if exc:
+                future = gen.throw(exc)
+            else:
+                future = gen.send(val)
+            val = None
+            exc = None
+        except StopIteration as e:
+            return e.value
+
+
 def make_admin() -> AuthenticatedUser:
     return AuthenticatedUser(
         id=ADMIN_ID,
@@ -59,7 +76,7 @@ class AdministrationSchemaTests(unittest.TestCase):
         dependency = require_roles("ADMIN")
         faculty = make_admin().model_copy(update={"roles": ["FACULTY"]})
         with self.assertRaises(HTTPException) as raised:
-            asyncio.run(dependency(faculty))
+            run_async(dependency(faculty))
         self.assertEqual(raised.exception.status_code, 403)
 
     def test_admin_routes_are_registered_with_bearer_auth(self) -> None:
@@ -104,68 +121,69 @@ class AdministrationSchemaTests(unittest.TestCase):
             )
 
 
-class AdministrationServiceTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self) -> None:
+
+class AdministrationServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
         self.connection = MagicMock()
         self.connection.execute = AsyncMock()
         self.connection.commit = AsyncMock()
         self.connection.rollback = AsyncMock()
         self.actor = make_admin()
 
-    async def test_list_resources_always_scopes_to_admin_college(self) -> None:
+    def test_list_resources_always_scopes_to_admin_college(self) -> None:
         result = MagicMock()
         result.mappings.return_value.all.return_value = []
         self.connection.execute.return_value = result
 
-        await administration_service.list_resources(
+        run_async(administration_service.list_resources(
             self.connection,
             self.actor,
             "departments",
             limit=50,
             offset=10,
-        )
+        ))
 
         statement, parameters = self.connection.execute.await_args.args
         self.assertIn("WHERE college_id = :college_id", str(statement))
         self.assertEqual(parameters["college_id"], COLLEGE_ID)
         self.assertEqual(parameters["limit"], 50)
 
-    async def test_create_resource_uses_caller_tenant_and_commits(self) -> None:
+    def test_create_resource_uses_caller_tenant_and_commits(self) -> None:
         result = result_with_one({"id": USER_ID, "college_id": COLLEGE_ID})
         self.connection.execute.return_value = result
 
-        await administration_service.create_resource(
+        run_async(administration_service.create_resource(
             self.connection,
             self.actor,
             "departments",
             {"name": "Science", "code": "SCI"},
-        )
+        ))
 
         _, parameters = self.connection.execute.await_args_list[-1].args
         self.assertEqual(parameters["college_id"], COLLEGE_ID)
         self.assertEqual(parameters["name"], "Science")
         self.connection.commit.assert_awaited_once()
 
-    async def test_update_resource_cannot_cross_tenant(self) -> None:
+    def test_update_resource_cannot_cross_tenant(self) -> None:
         result = MagicMock()
         result.mappings.return_value.one_or_none.return_value = None
         self.connection.execute.return_value = result
 
         with self.assertRaises(HTTPException) as raised:
-            await administration_service.update_resource(
+            run_async(administration_service.update_resource(
                 self.connection,
                 self.actor,
                 "departments",
                 USER_ID,
                 {"name": "Changed"},
-            )
+            ))
 
         self.assertEqual(raised.exception.status_code, 404)
         _, parameters = self.connection.execute.await_args.args
         self.assertEqual(parameters["college_id"], COLLEGE_ID)
         self.connection.commit.assert_not_awaited()
 
-    async def test_integrity_conflict_rolls_back_and_returns_conflict(self) -> None:
+    def test_integrity_conflict_rolls_back_and_returns_conflict(self) -> None:
         self.connection.execute.side_effect = IntegrityError(
             "INSERT",
             {},
@@ -173,24 +191,24 @@ class AdministrationServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaises(HTTPException) as raised:
-            await administration_service.create_resource(
+            run_async(administration_service.create_resource(
                 self.connection,
                 self.actor,
                 "departments",
                 {"name": "Science", "code": "SCI"},
-            )
+            ))
 
         self.assertEqual(raised.exception.status_code, 409)
         self.connection.rollback.assert_awaited_once()
         self.connection.commit.assert_not_awaited()
 
-    async def test_faculty_assignment_requires_active_college_faculty(self) -> None:
+    def test_faculty_assignment_requires_active_college_faculty(self) -> None:
         role_lookup = MagicMock()
         role_lookup.scalar_one_or_none.return_value = None
         self.connection.execute.return_value = role_lookup
 
         with self.assertRaises(HTTPException) as raised:
-            await administration_service.create_resource(
+            run_async(administration_service.create_resource(
                 self.connection,
                 self.actor,
                 "faculty_assignments",
@@ -200,7 +218,7 @@ class AdministrationServiceTests(unittest.IsolatedAsyncioTestCase):
                     "class_id": USER_ID,
                     "academic_year_id": USER_ID,
                 },
-            )
+            ))
 
         self.assertEqual(raised.exception.status_code, 422)
         _, parameters = self.connection.execute.await_args_list[-1].args
@@ -208,7 +226,7 @@ class AdministrationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parameters["role_code"], "FACULTY")
         self.connection.commit.assert_not_awaited()
 
-    async def test_profile_creation_is_atomic_and_hashes_initial_password(self) -> None:
+    def test_profile_creation_is_atomic_and_hashes_initial_password(self) -> None:
         user_insert = MagicMock()
         user_insert.scalar_one.return_value = USER_ID
         role_insert = MagicMock()
@@ -234,12 +252,12 @@ class AdministrationServiceTests(unittest.IsolatedAsyncioTestCase):
             roll_number="r-01",
         )
 
-        profile = await administration_service.create_profile(
+        profile = run_async(administration_service.create_profile(
             self.connection,
             self.actor,
             "student",
             request,
-        )
+        ))
 
         self.assertEqual(profile["id"], USER_ID)
         self.assertEqual(self.connection.execute.await_count, 4)
@@ -249,16 +267,16 @@ class AdministrationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(user_parameters["password_hash"], "initial secure password")
         self.connection.commit.assert_awaited_once()
 
-    async def test_profile_deactivation_revokes_tokens_and_memberships(self) -> None:
+    def test_profile_deactivation_revokes_tokens_and_memberships(self) -> None:
         self.connection.execute.return_value = MagicMock()
         self.connection.execute.return_value.scalar_one_or_none.return_value = USER_ID
 
-        await administration_service.deactivate_profile(
+        run_async(administration_service.deactivate_profile(
             self.connection,
             self.actor,
             "student",
             USER_ID,
-        )
+        ))
 
         self.assertEqual(self.connection.execute.await_count, 2)
         user_statement = self.connection.execute.await_args_list[0].args[0]

@@ -19,7 +19,7 @@ def normalize_email_address(value: str) -> str:
 
 
 class LoginRequest(BaseModel):
-    college_id: UUID
+    college_id: UUID | None = None
     email: str
     password: SecretStr
 

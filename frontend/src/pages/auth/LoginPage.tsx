@@ -10,7 +10,6 @@ export const LoginPage: React.FC = () => {
   const { login, user, activeRole, error: authError, clearError } = useAuth();
   const navigate = useNavigate();
 
-  const [collegeId, setCollegeId] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -38,13 +37,8 @@ export const LoginPage: React.FC = () => {
     setValidationError(null);
     clearError();
 
-    const trimmedCollegeId = collegeId.trim();
     const trimmedEmail = email.trim();
 
-    if (!trimmedCollegeId) {
-      setValidationError('College ID is required.');
-      return;
-    }
     if (!trimmedEmail) {
       setValidationError('Email address is required.');
       return;
@@ -57,7 +51,6 @@ export const LoginPage: React.FC = () => {
     setIsSubmitting(true);
     try {
       await login({
-        college_id: trimmedCollegeId,
         email: trimmedEmail,
         password,
       });
@@ -80,7 +73,7 @@ export const LoginPage: React.FC = () => {
             Q
           </div>
           <h1 className="text-2xl font-bold text-gray-900 tracking-tight">CampusQuiz Portal</h1>
-          <p className="text-xs text-gray-500 mt-1">Multi-tenant institutional assessment system</p>
+          <p className="text-xs text-gray-500 mt-1">Institutional assessment system</p>
         </div>
 
         <Card>
@@ -88,18 +81,6 @@ export const LoginPage: React.FC = () => {
             {errorMessage && (
               <ErrorDisplay message={errorMessage} className="mb-4" />
             )}
-
-            <Input
-              label="College Identifier (UUID)"
-              type="text"
-              name="collegeId"
-              placeholder="e.g. aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-              value={collegeId}
-              onChange={(e) => setCollegeId(e.target.value)}
-              helperText="Supplied by your institutional administrator"
-              required
-              disabled={isSubmitting}
-            />
 
             <Input
               label="Institutional Email"

@@ -118,9 +118,14 @@ async def login(
     request: LoginRequest,
     settings: Settings,
 ) -> TokenResponse:
+    college_id = (
+        request.college_id
+        if request.college_id is not None
+        else getattr(settings, "default_college_id", UUID("511a5ce7-0665-496a-b246-72bb0821de81"))
+    )
     result = await connection.execute(
         _LOGIN_USER_QUERY,
-        {"college_id": request.college_id, "email": request.email},
+        {"college_id": college_id, "email": request.email},
     )
     user = result.mappings().one_or_none()
     password_valid = verify_password_or_dummy(

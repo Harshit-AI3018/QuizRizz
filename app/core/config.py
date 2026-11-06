@@ -1,3 +1,6 @@
+from typing import Any
+from uuid import UUID
+
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
@@ -20,6 +23,18 @@ class Settings(BaseSettings):
     auth_hmac_secret: SecretStr
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
+    default_college_id: UUID = Field(
+        default=UUID("511a5ce7-0665-496a-b246-72bb0821de81"),
+        validation_alias=AliasChoices("DEFAULT_COLLEGE_ID", "default_college_id"),
+    )
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "https://campusquiz.pages.dev",
+        ],
+        validation_alias=AliasChoices("CORS_ORIGINS", "cors_origins"),
+    )
 
     def __init__(self, **values):
         # Explicit keyword arguments must always take precedence over environment variables.
@@ -47,6 +62,15 @@ class Settings(BaseSettings):
         if self.refresh_token_expire_days < 1:
             raise ValueError("REFRESH_TOKEN_EXPIRE_DAYS must be positive")
         return self
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        if isinstance(value, (list, tuple, set)):
+            return [str(origin).strip() for origin in value if str(origin).strip()]
+        return value
 
     @field_validator("app_database_url")
     @classmethod

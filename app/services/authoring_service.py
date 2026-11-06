@@ -886,3 +886,43 @@ async def archive_quiz(
             raise _not_found()
 
     await _commit_mutation(connection, operation)
+
+
+async def list_faculty_assignments(
+    connection: AsyncConnection,
+    actor: AuthenticatedUser,
+) -> list[Mapping[str, Any]]:
+    is_admin = _is_admin(actor)
+    where_sql = "fa.college_id = :college_id AND fa.is_active = TRUE"
+    params: dict[str, Any] = {"college_id": actor.college_id}
+    if not is_admin:
+        where_sql += " AND fa.faculty_user_id = :faculty_user_id"
+        params["faculty_user_id"] = actor.id
+
+    query = f"""
+        SELECT
+            fa.id,
+            fa.college_id,
+            fa.faculty_user_id,
+            fa.subject_id,
+            s.name AS subject_name,
+            s.code AS subject_code,
+            fa.class_id,
+            CONCAT(b.name, ' - Year ', c.year_of_study, ', Sem ', c.semester, ', Sec ', c.section) AS class_name,
+            fa.academic_year_id,
+            ay.name AS academic_year_name,
+            fa.is_active
+        FROM faculty_assignments AS fa
+        JOIN subjects AS s
+          ON s.id = fa.subject_id AND s.college_id = fa.college_id
+        JOIN classes AS c
+          ON c.id = fa.class_id AND c.college_id = fa.college_id
+        JOIN branches AS b
+          ON b.id = c.branch_id AND b.college_id = c.college_id
+        JOIN academic_years AS ay
+          ON ay.id = fa.academic_year_id AND ay.college_id = fa.college_id
+        WHERE {where_sql}
+        ORDER BY s.name, class_name
+    """
+    result = await connection.execute(text(query), params)
+    return result.mappings().all()
