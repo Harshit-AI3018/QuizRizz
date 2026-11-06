@@ -32,6 +32,7 @@ vi.mock('../api/sessionApi', () => ({
 vi.mock('../api/facultyApi', () => ({
   facultyApi: {
     listQuizzes: vi.fn(),
+    listAssignments: vi.fn().mockResolvedValue([]),
   },
 }));
 

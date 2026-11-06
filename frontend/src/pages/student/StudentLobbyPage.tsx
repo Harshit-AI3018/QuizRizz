@@ -86,7 +86,9 @@ export const StudentLobbyPage: React.FC = () => {
     try {
       const attemptStart = await studentApi.startQuizAttempt(sessionId);
       showToast('Assessment started! Good luck.', 'success');
-      navigate(`/student/attempts/${attemptStart.attempt_id}`);
+      navigate(`/student/attempts/${attemptStart.attempt_id}`, {
+        state: { attemptStart },
+      });
     } catch (err: any) {
       showToast(err.message || 'Unable to start attempt', 'error');
       fetchLobbyStatus();
@@ -122,7 +124,7 @@ export const StudentLobbyPage: React.FC = () => {
     (lobby.lobby_status === 'READY_TO_START' || isLive);
 
   const isWaitingForTeacher =
-    isScheduled || lobby.lobby_status === 'WAITING_FOR_TEACHER';
+    !isLive && (isScheduled || lobby.lobby_status === 'WAITING_FOR_TEACHER');
 
   return (
     <div className="space-y-6 max-w-3xl mx-auto">

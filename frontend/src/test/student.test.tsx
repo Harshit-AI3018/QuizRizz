@@ -276,9 +276,14 @@ const sampleResultReleased: StudentAttemptResult = {
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
-function renderWithRouter(element: React.ReactElement, path = '/', routePath = '/') {
+function renderWithRouter(
+  element: React.ReactElement,
+  path = '/',
+  routePath = '/',
+  customInitialEntries?: (string | { pathname: string; state?: any })[]
+) {
   return render(
-    <MemoryRouter initialEntries={[path]}>
+    <MemoryRouter initialEntries={customInitialEntries || [path]}>
       <Routes>
         <Route path={routePath} element={element} />
       </Routes>
@@ -533,6 +538,32 @@ describe('StudentLobbyPage', () => {
     await waitFor(() => {
       // getSessionLobby should be called at least twice (initial + on event)
       expect(studentApi.getSessionLobby).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('shows error toast when starting attempt fails', async () => {
+    (studentApi.getSessionLobby as ReturnType<typeof vi.fn>).mockResolvedValue(sampleLobbyActive);
+    (studentApi.startQuizAttempt as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('Cannot start attempt: Session schedule window has ended')
+    );
+
+    renderWithRouter(
+      <StudentLobbyPage />,
+      '/student/sessions/sess-avail-1/lobby',
+      '/student/sessions/:sessionId/lobby'
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /start/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /start/i }));
+
+    await waitFor(() => {
+      expect(mockShowToast).toHaveBeenCalledWith(
+        expect.stringContaining('schedule window has ended'),
+        'error'
+      );
     });
   });
 });
@@ -795,6 +826,98 @@ describe('StudentAttemptPage', () => {
     await waitFor(() => {
       expect(studentApi.getAttempt).toHaveBeenCalledWith('att-1');
     });
+  });
+
+  it('shows error display when questions fail to load', async () => {
+    (studentApi.getAttemptQuestions as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('Failed to load assessment questions')
+    );
+
+    renderWithRouter(
+      <StudentAttemptPage />,
+      '/student/attempts/att-1',
+      '/student/attempts/:attemptId'
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load assessment questions/i)).toBeInTheDocument();
+    });
+  });
+
+  it('hydrates attempt questions immediately when location state is provided', async () => {
+    renderWithRouter(
+      <StudentAttemptPage />,
+      '/student/attempts/att-1',
+      '/student/attempts/:attemptId',
+      [{ pathname: '/student/attempts/att-1', state: { attemptStart: sampleAttemptStart } }]
+    );
+
+    // Initial render should already have the question without needing to wait for mock API resolves
+    expect(screen.getByText(/OS scheduling algorithm/i)).toBeInTheDocument();
+  });
+
+  it('navigates to result page if submitAttempt receives 409 already finalized', async () => {
+    const error409 = new Error('Cannot save response: Attempt is already FINALIZED');
+    (error409 as any).status = 409;
+    (studentApi.submitAttempt as ReturnType<typeof vi.fn>).mockRejectedValue(error409);
+
+    renderWithRouter(
+      <StudentAttemptPage />,
+      '/student/attempts/att-1',
+      '/student/attempts/:attemptId'
+    );
+
+    await waitFor(() => expect(screen.getByText(/OS scheduling algorithm/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /confirm/i })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
+
+    await waitFor(() => {
+      expect(studentApi.submitAttempt).toHaveBeenCalledWith('att-1');
+      expect(mockShowToast).toHaveBeenCalledWith(
+        expect.stringContaining('submitted successfully'),
+        'success'
+      );
+    });
+  });
+
+  it('flushes pending autosave before submitting and prevents duplicate saves', async () => {
+    (studentApi.submitAttempt as ReturnType<typeof vi.fn>).mockResolvedValue(sampleFinalizedAttempt);
+
+    renderWithRouter(
+      <StudentAttemptPage />,
+      '/student/attempts/att-1',
+      '/student/attempts/:attemptId'
+    );
+
+    await waitFor(() => expect(screen.getByText(/OS scheduling algorithm/i)).toBeInTheDocument());
+
+    // Select an option (triggers 300ms debounce)
+    fireEvent.click(screen.getByText('Round Robin'));
+
+    // Immediately open submit and confirm before debounce completes
+    fireEvent.click(screen.getByRole('button', { name: /submit/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /confirm/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
+
+    await waitFor(() => {
+      expect(studentApi.saveStudentResponse).toHaveBeenCalledWith(
+        'att-1',
+        expect.objectContaining({
+          question_id: 'q-mcq-1',
+          selected_option_ids: ['opt-a'],
+        })
+      );
+      expect(studentApi.submitAttempt).toHaveBeenCalledWith('att-1');
+    });
+
+    // Advance timers by 500ms to ensure cleared debounce timer does not fire again
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // saveStudentResponse should only have been called once (the pre-submit flush)
+    expect(studentApi.saveStudentResponse).toHaveBeenCalledTimes(1);
   });
 });
 

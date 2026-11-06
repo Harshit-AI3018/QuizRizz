@@ -16,7 +16,7 @@ export const QuizFormPage: React.FC = () => {
   const isEdit = Boolean(quizId);
   const { showToast } = useToast();
 
-  const [isLoading, setIsLoading] = useState<boolean>(isEdit);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -31,35 +31,73 @@ export const QuizFormPage: React.FC = () => {
   const [negativePenalty, setNegativePenalty] = useState<string>('0.25');
   const [resultVisibility, setResultVisibility] = useState<ResultVisibility>('AFTER_SESSION_ENDS');
   const [quizStatus, setQuizStatus] = useState<QuizStatus>('DRAFT');
+  const [assignedSubjects, setAssignedSubjects] = useState<{ id: string; name: string; code: string }[]>([]);
 
-  const loadQuiz = useCallback(async () => {
-    if (!quizId) return;
-    setIsLoading(true);
+  const loadInitialData = useCallback(async () => {
+    // Only show full-page spinner when editing (need to fetch quiz data)
+    if (isEdit) setIsLoading(true);
     setLoadError(null);
     try {
-      const q = await facultyApi.getQuiz(quizId);
-      setSubjectId(q.subject_id);
-      setTitle(q.title);
-      setDescription(q.description || '');
-      setInstructions(q.instructions || '');
-      setTopic(q.topic || '');
-      setDurationMinutes(q.default_duration_minutes);
-      setNegativeMarkingEnabled(q.default_negative_marking_enabled);
-      setNegativePenalty(q.default_negative_penalty ? String(q.default_negative_penalty) : '0.25');
-      setResultVisibility(q.default_result_visibility);
-      setQuizStatus(q.status);
+      const assignmentsPromise =
+        typeof facultyApi.listAssignments === 'function'
+          ? facultyApi.listAssignments().catch(() => [])
+          : Promise.resolve([]);
+
+      if (isEdit && quizId) {
+        // For edit mode: fetch quiz and assignments in parallel
+        const [assignments, q] = await Promise.all([
+          assignmentsPromise,
+          facultyApi.getQuiz(quizId),
+        ]);
+        const uniqueMap = new Map<string, { id: string; name: string; code: string }>();
+        assignments.forEach((a) => {
+          if (!uniqueMap.has(a.subject_id)) {
+            uniqueMap.set(a.subject_id, { id: a.subject_id, name: a.subject_name, code: a.subject_code });
+          }
+        });
+        setAssignedSubjects(Array.from(uniqueMap.values()));
+        setSubjectId(q.subject_id);
+        setTitle(q.title);
+        setDescription(q.description || '');
+        setInstructions(q.instructions || '');
+        setTopic(q.topic || '');
+        setDurationMinutes(q.default_duration_minutes);
+        setNegativeMarkingEnabled(q.default_negative_marking_enabled);
+        setNegativePenalty(q.default_negative_penalty ? String(q.default_negative_penalty) : '0.25');
+        setResultVisibility(q.default_result_visibility);
+        setQuizStatus(q.status);
+      } else {
+        // For create mode: fetch assignments in background without blocking the form
+        assignmentsPromise.then((assignments) => {
+          const uniqueMap = new Map<string, { id: string; name: string; code: string }>();
+          assignments.forEach((a) => {
+            if (!uniqueMap.has(a.subject_id)) {
+              uniqueMap.set(a.subject_id, { id: a.subject_id, name: a.subject_name, code: a.subject_code });
+            }
+          });
+          const subjects = Array.from(uniqueMap.values());
+          setAssignedSubjects(subjects);
+          const searchParams = new URLSearchParams(window.location.search);
+          const preselectedSubject = searchParams.get('subject_id');
+          if (preselectedSubject && subjects.some((s) => s.id === preselectedSubject)) {
+            setSubjectId(preselectedSubject);
+          } else if (subjects.length > 0) {
+            setSubjectId(subjects[0].id);
+          }
+        }).catch(() => {});
+      }
     } catch {
-      setLoadError('Failed to load quiz details. Please try again.');
+      if (isEdit) setLoadError('Failed to load quiz details. Please try again.');
     } finally {
-      setIsLoading(false);
+      if (isEdit) setIsLoading(false);
     }
-  }, [quizId]);
+  }, [isEdit, quizId]);
 
   useEffect(() => {
-    if (isEdit) {
-      loadQuiz();
-    }
-  }, [isEdit, loadQuiz]);
+    loadInitialData();
+  }, [loadInitialData]);
+
+  const loadQuiz = loadInitialData;
 
   const isLocked = isEdit && quizStatus !== 'DRAFT';
 
@@ -196,17 +234,38 @@ export const QuizFormPage: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Subject UUID <span className="text-red-500">*</span>
+                Subject <span className="text-red-500">*</span>
               </label>
-              <input
-                type="text"
-                required
-                disabled={isLocked}
-                placeholder="e.g. 123e4567-e89b-12d3-a456-426614174000"
-                value={subjectId}
-                onChange={(e) => setSubjectId(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
-              />
+              {assignedSubjects.length > 0 ? (
+                <select
+                  required
+                  disabled={isLocked}
+                  value={subjectId}
+                  onChange={(e) => setSubjectId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                >
+                  {assignedSubjects.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.code})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  required
+                  disabled={isLocked}
+                  placeholder="e.g. 123e4567-e89b-12d3-a456-426614174000"
+                  value={subjectId}
+                  onChange={(e) => setSubjectId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                />
+              )}
+              {assignedSubjects.length === 0 && (
+                <p className="text-xs text-amber-600 mt-1">
+                  No active assignments detected. Ensure an administrator has assigned you to this subject.
+                </p>
+              )}
             </div>
 
             <div>

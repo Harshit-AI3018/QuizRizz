@@ -132,3 +132,17 @@ export interface QuizPublished {
   status: 'PUBLISHED';
   total_marks: string | number;
 }
+
+export interface FacultyAssignment {
+  id: string;
+  college_id: string;
+  faculty_user_id: string;
+  subject_id: string;
+  subject_name: string;
+  subject_code: string;
+  class_id: string;
+  class_name: string;
+  academic_year_id: string;
+  academic_year_name: string;
+  is_active: boolean;
+}

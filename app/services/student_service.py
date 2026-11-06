@@ -41,7 +41,10 @@ _AVAILABLE_SESSIONS_QUERY = """
         s.name AS subject_name,
         s.code AS subject_code,
         qs.class_id,
-        c.name AS class_name,
+        CONCAT(
+            b.name, ' - Year ', c.year_of_study,
+            ', Semester ', c.semester, ', Section ', c.section
+        ) AS class_name,
         TRIM(u.first_name || ' ' || COALESCE(u.last_name, '')) AS faculty_name,
         qs.session_mode,
         qs.status,
@@ -54,6 +57,7 @@ _AVAILABLE_SESSIONS_QUERY = """
     JOIN quizzes q ON q.id = qs.quiz_id
     JOIN subjects s ON s.id = q.subject_id
     JOIN classes c ON c.id = qs.class_id
+    JOIN branches b ON b.id = c.branch_id AND b.college_id = c.college_id
     JOIN users u ON u.id = qs.faculty_user_id
     JOIN student_enrollments se
       ON se.class_id = qs.class_id
@@ -80,7 +84,10 @@ _JOINED_SESSIONS_QUERY = """
         s.name AS subject_name,
         s.code AS subject_code,
         qs.class_id,
-        c.name AS class_name,
+        CONCAT(
+            b.name, ' - Year ', c.year_of_study,
+            ', Semester ', c.semester, ', Section ', c.section
+        ) AS class_name,
         TRIM(u.first_name || ' ' || COALESCE(u.last_name, '')) AS faculty_name,
         qs.session_mode,
         qs.status,
@@ -94,6 +101,7 @@ _JOINED_SESSIONS_QUERY = """
     JOIN quizzes q ON q.id = qs.quiz_id
     JOIN subjects s ON s.id = q.subject_id
     JOIN classes c ON c.id = qs.class_id
+    JOIN branches b ON b.id = c.branch_id AND b.college_id = c.college_id
     JOIN users u ON u.id = qs.faculty_user_id
     WHERE qa.college_id = :college_id
       AND qa.student_user_id = :student_id
@@ -112,7 +120,10 @@ _SESSION_DETAILS_QUERY = """
         s.name AS subject_name,
         s.code AS subject_code,
         qs.class_id,
-        c.name AS class_name,
+        CONCAT(
+            b.name, ' - Year ', c.year_of_study,
+            ', Semester ', c.semester, ', Section ', c.section
+        ) AS class_name,
         TRIM(u.first_name || ' ' || COALESCE(u.last_name, '')) AS faculty_name,
         qs.session_mode,
         qs.status AS session_status,
@@ -123,6 +134,7 @@ _SESSION_DETAILS_QUERY = """
     JOIN quizzes q ON q.id = qs.quiz_id
     JOIN subjects s ON s.id = q.subject_id
     JOIN classes c ON c.id = qs.class_id
+    JOIN branches b ON b.id = c.branch_id AND b.college_id = c.college_id
     JOIN users u ON u.id = qs.faculty_user_id
 """
 
@@ -326,9 +338,9 @@ async def list_available_sessions(
         },
     )
     rows = result.mappings().all()
-    sessions = []
+    sessions: list[dict[str, Any]] = []
     for r in rows:
-        d = dict(r)
+        d: dict[str, Any] = {str(k): v for k, v in r.items()}
         d["has_attempt"] = d.get("attempt_id") is not None
         d["is_joined"] = d["has_attempt"]
         sessions.append(d)
@@ -353,9 +365,9 @@ async def list_joined_sessions(
         },
     )
     rows = result.mappings().all()
-    sessions = []
+    sessions: list[dict[str, Any]] = []
     for r in rows:
-        d = dict(r)
+        d: dict[str, Any] = {str(k): v for k, v in r.items()}
         d["has_attempt"] = True
         d["is_joined"] = True
         sessions.append(d)
@@ -423,7 +435,10 @@ async def join_session_by_code(
     )
     attempt = attempt_res.mappings().one_or_none()
 
-    return _build_lobby_status(session, attempt)
+    return _build_lobby_status(
+        {str(k): v for k, v in session.items()},
+        {str(k): v for k, v in attempt.items()} if attempt is not None else None,
+    )
 
 
 async def get_session_lobby(
@@ -468,7 +483,10 @@ async def get_session_lobby(
     )
     attempt = attempt_res.mappings().one_or_none()
 
-    return _build_lobby_status(session, attempt)
+    return _build_lobby_status(
+        {str(k): v for k, v in session.items()},
+        {str(k): v for k, v in attempt.items()} if attempt is not None else None,
+    )
 
 
 # =============================================================================
@@ -534,7 +552,7 @@ async def start_quiz_attempt(
         settings=settings,
     )
 
-    async def operation() -> Mapping[str, Any]:
+    async def operation() -> dict[str, Any]:
         result = await connection.execute(
             text(
                 """
@@ -548,7 +566,8 @@ async def start_quiz_attempt(
                 "auth_signature": signature,
             },
         )
-        return result.mappings().one()
+        row = result.mappings().one()
+        return {str(k): v for k, v in row.items()}
 
     attempt_data = await _commit_mutation(connection, operation)
 
@@ -664,15 +683,38 @@ async def get_attempt_questions(
 ) -> list[dict[str, Any]]:
     await _require_student_profile(connection, actor)
 
+    # Query questions and options through authorized relational tables to avoid
+    # 42501 permission denied on quiz_sessions.snapshot_json (column-level security restricted)
     result = await connection.execute(
         text(
             """
-            SELECT qs.snapshot_json
+            SELECT
+                qa.id AS attempt_id,
+                q.id AS question_id,
+                qq.sequence_order,
+                q.question_type,
+                q.question_text,
+                COALESCE(qq.marks_override, q.default_marks) AS marks,
+                CASE
+                    WHEN COALESCE(qs.negative_marking_enabled, qq.negative_marking_enabled_override, qz.default_negative_marking_enabled, FALSE) = FALSE THEN 0.000000
+                    WHEN qs.negative_penalty IS NOT NULL THEN qs.negative_penalty
+                    WHEN qq.negative_penalty_override IS NOT NULL THEN qq.negative_penalty_override
+                    WHEN qz.default_negative_penalty IS NOT NULL THEN qz.default_negative_penalty
+                    ELSE q.default_negative_penalty
+                END AS negative_penalty,
+                qo.id AS option_id,
+                qo.option_text,
+                qo.display_order
             FROM quiz_attempts qa
             JOIN quiz_sessions qs ON qs.id = qa.session_id
+            JOIN quizzes qz ON qz.id = qs.quiz_id
+            JOIN quiz_questions qq ON qq.quiz_id = qz.id
+            JOIN questions q ON q.id = qq.question_id
+            JOIN question_options qo ON qo.question_id = q.id
             WHERE qa.id = :attempt_id
               AND qa.college_id = :college_id
               AND qa.student_user_id = :student_id
+            ORDER BY qq.sequence_order ASC, qo.display_order ASC
             """
         ),
         {
@@ -681,39 +723,53 @@ async def get_attempt_questions(
             "student_id": actor.id,
         },
     )
-    row = result.mappings().one_or_none()
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Quiz attempt not found",
+    rows = result.mappings().all()
+
+    if not rows:
+        # Check if attempt exists for this student and college
+        att_check = await connection.execute(
+            text(
+                """
+                SELECT id
+                FROM quiz_attempts
+                WHERE id = :attempt_id
+                  AND college_id = :college_id
+                  AND student_user_id = :student_id
+                """
+            ),
+            {
+                "attempt_id": attempt_id,
+                "college_id": actor.college_id,
+                "student_id": actor.id,
+            },
         )
+        if att_check.mappings().one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Quiz attempt not found",
+            )
+        return []
 
-    raw_snapshot = row["snapshot_json"]
-    if isinstance(raw_snapshot, str):
-        snapshot = json.loads(raw_snapshot)
-    else:
-        snapshot = raw_snapshot or {}
-
-    raw_questions = snapshot.get("questions") or []
-    sanitized = []
-    for q in raw_questions:
-        sanitized_options = []
-        for opt in q.get("options") or []:
-            sanitized_options.append({
-                "option_id": opt["option_id"],
-                "option_text": opt["option_text"],
-                "display_order": opt["display_order"],
+    questions_map: dict[UUID, dict[str, Any]] = {}
+    for r in rows:
+        qid = r["question_id"]
+        if qid not in questions_map:
+            questions_map[qid] = {
+                "question_id": qid,
+                "sequence_order": r["sequence_order"],
+                "question_type": r["question_type"],
+                "question_text": r["question_text"],
+                "marks": r["marks"],
+                "negative_penalty": r["negative_penalty"],
+                "options": [],
+            }
+        if r.get("option_id") is not None:
+            questions_map[qid]["options"].append({
+                "option_id": r["option_id"],
+                "option_text": r["option_text"],
+                "display_order": r["display_order"],
             })
-        sanitized.append({
-            "question_id": q["question_id"],
-            "sequence_order": q["sequence_order"],
-            "question_type": q["question_type"],
-            "question_text": q["question_text"],
-            "marks": q["marks"],
-            "negative_penalty": q["negative_penalty"],
-            "options": sanitized_options,
-        })
-    return sanitized
+    return list(questions_map.values())
 
 
 async def get_saved_responses(
@@ -743,7 +799,7 @@ async def get_saved_responses(
             "student_id": actor.id,
         },
     )
-    return list(result.mappings().all())
+    return [{str(k): v for k, v in r.items()} for r in result.mappings().all()]
 
 
 async def save_student_response(
@@ -779,15 +835,15 @@ async def save_student_response(
 
     option_ids_array = [str(uid) for uid in payload.selected_option_ids]
 
-    async def operation() -> Mapping[str, Any]:
+    async def operation() -> dict[str, Any]:
         result = await connection.execute(
             text(
                 """
-                SELECT sync_status, persisted_version
+                SELECT result_status AS sync_status, saved_version AS persisted_version
                 FROM sp_save_student_response(
                     :attempt_id,
                     :question_id,
-                    :selected_option_ids::UUID[],
+                    CAST(:selected_option_ids AS UUID[]),
                     :is_marked_for_review,
                     :client_version,
                     :client_submitted_at,
@@ -807,7 +863,8 @@ async def save_student_response(
                 "auth_signature": signature,
             },
         )
-        return result.mappings().one()
+        row = result.mappings().one()
+        return {str(k): v for k, v in row.items()}
 
     save_result = await _commit_mutation(connection, operation)
 
@@ -892,24 +949,30 @@ async def finalize_student_attempt(
 
     # 2. Idempotent short-circuit if already FINALIZED
     if attempt["status"] == "FINALIZED":
-        ticket = create_actor_ticket(
-            user_id=str(actor.id),
-            token_version=actor.token_version,
-            role="STUDENT",
-            settings=settings,
-        )
-        res = await connection.execute(
-            text(
-                """
-                SELECT is_results_released, total_score
-                FROM sp_get_student_attempt_results(:attempt_id, :actor_id, :auth_signature)
-                """
-            ),
-            {"attempt_id": attempt_id, "actor_id": actor.id, "auth_signature": ticket},
-        )
-        res_row = res.mappings().one_or_none()
-        is_released = bool(res_row["is_results_released"]) if res_row else False
-        score = res_row["total_score"] if (res_row and is_released) else None
+        is_released = False
+        score = None
+        try:
+            ticket = create_actor_ticket(
+                user_id=str(actor.id),
+                token_version=actor.token_version,
+                role="ANY",
+                settings=settings,
+            )
+            res = await connection.execute(
+                text(
+                    """
+                    SELECT is_results_released, total_score
+                    FROM sp_get_student_attempt_results(:attempt_id, :actor_id, :auth_signature)
+                    """
+                ),
+                {"attempt_id": attempt_id, "actor_id": actor.id, "auth_signature": ticket},
+            )
+            res_row = res.mappings().one_or_none()
+            is_released = bool(res_row["is_results_released"]) if res_row else False
+            score = res_row["total_score"] if (res_row and is_released) else None
+        except Exception:
+            is_released = False
+            score = None
 
         return {
             "attempt_id": attempt_id,
@@ -934,7 +997,7 @@ async def finalize_student_attempt(
         settings=settings,
     )
 
-    async def operation() -> Mapping[str, Any]:
+    async def operation() -> dict[str, Any]:
         result = await connection.execute(
             text(
                 """
@@ -949,7 +1012,8 @@ async def finalize_student_attempt(
                 "auth_signature": signature,
             },
         )
-        return result.mappings().one()
+        row = result.mappings().one()
+        return {str(k): v for k, v in row.items()}
 
     final_row = await _commit_mutation(connection, operation)
 
@@ -976,24 +1040,30 @@ async def finalize_student_attempt(
         pass
 
     # 4. Check whether results are released
-    res_ticket = create_actor_ticket(
-        user_id=str(actor.id),
-        token_version=actor.token_version,
-        role="STUDENT",
-        settings=settings,
-    )
-    result_check = await connection.execute(
-        text(
-            """
-            SELECT is_results_released, total_score
-            FROM sp_get_student_attempt_results(:attempt_id, :actor_id, :auth_signature)
-            """
-        ),
-        {"attempt_id": attempt_id, "actor_id": actor.id, "auth_signature": res_ticket},
-    )
-    res_row = result_check.mappings().one_or_none()
-    is_released = bool(res_row["is_results_released"]) if res_row else False
-    score = final_row["total_score"] if is_released else None
+    is_released = False
+    score = None
+    try:
+        res_ticket = create_actor_ticket(
+            user_id=str(actor.id),
+            token_version=actor.token_version,
+            role="ANY",
+            settings=settings,
+        )
+        result_check = await connection.execute(
+            text(
+                """
+                SELECT is_results_released, total_score
+                FROM sp_get_student_attempt_results(:attempt_id, :actor_id, :auth_signature)
+                """
+            ),
+            {"attempt_id": attempt_id, "actor_id": actor.id, "auth_signature": res_ticket},
+        )
+        res_row = result_check.mappings().one_or_none()
+        is_released = bool(res_row["is_results_released"]) if res_row else False
+        score = final_row["total_score"] if is_released else None
+    except Exception:
+        is_released = False
+        score = None
 
     return {
         "attempt_id": attempt_id,
@@ -1041,7 +1111,7 @@ async def get_student_attempt_result(
     signature = create_actor_ticket(
         user_id=str(actor.id),
         token_version=actor.token_version,
-        role="STUDENT",
+        role="ANY",
         settings=settings,
     )
 

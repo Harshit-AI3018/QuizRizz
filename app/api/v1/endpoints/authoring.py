@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.api.deps import get_current_actor, get_database_connection, require_roles
 from app.schemas.authoring import (
+    FacultyAssignmentRead,
     QuestionCreate,
     QuestionOptionsReplace,
     QuestionRead,
@@ -192,3 +193,14 @@ async def archive_quiz(
 ) -> Response:
     await authoring_service.archive_quiz(connection, actor, quiz_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/faculty/assignments",
+    response_model=list[FacultyAssignmentRead],
+)
+async def list_faculty_assignments(
+    connection: DatabaseConnection,
+    actor: Actor,
+) -> list[Mapping[str, Any]]:
+    return await authoring_service.list_faculty_assignments(connection, actor)

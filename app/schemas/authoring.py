@@ -249,3 +249,17 @@ class QuizRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     questions: list[QuizQuestionRead] = Field(default_factory=list)
+
+
+class FacultyAssignmentRead(BaseModel):
+    id: UUID
+    college_id: UUID
+    faculty_user_id: UUID
+    subject_id: UUID
+    subject_name: str
+    subject_code: str
+    class_id: UUID
+    class_name: str
+    academic_year_id: UUID
+    academic_year_name: str
+    is_active: bool

@@ -24,6 +24,7 @@ export const SessionFormPage: React.FC = () => {
   const { showToast } = useToast();
 
   const [quizzes, setQuizzes] = useState<QuizRead[]>([]);
+  const [assignedClasses, setAssignedClasses] = useState<{ id: string; name: string; subject_id: string }[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -52,30 +53,66 @@ export const SessionFormPage: React.FC = () => {
   const [negativePenalty, setNegativePenalty] = useState<string>('0.25');
   const [resultVisibility, setResultVisibility] = useState<string>('AFTER_SESSION_ENDS');
 
-  const loadQuizzes = useCallback(async () => {
+  const loadInitialData = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
     try {
-      const data = await facultyApi.listQuizzes({ limit: 500 });
-      // Only PUBLISHED quizzes can be scheduled into live sessions
-      const published = data.filter((q) => q.status === 'PUBLISHED');
+      const assignmentsPromise =
+        typeof facultyApi.listAssignments === 'function'
+          ? facultyApi.listAssignments().catch(() => [])
+          : Promise.resolve([]);
+      const [quizData, assignmentsData] = await Promise.all([
+        facultyApi.listQuizzes({ limit: 500 }).catch(() => []),
+        assignmentsPromise,
+      ]);
+
+      const published = quizData.filter((q) => q.status === 'PUBLISHED');
       setQuizzes(published);
 
+      const uniqueClasses = new Map<string, { id: string; name: string; subject_id: string }>();
+      assignmentsData.forEach((a) => {
+        if (!uniqueClasses.has(a.class_id)) {
+          uniqueClasses.set(a.class_id, {
+            id: a.class_id,
+            name: a.class_name,
+            subject_id: a.subject_id,
+          });
+        }
+      });
+      const classesList = Array.from(uniqueClasses.values());
+      setAssignedClasses(classesList);
+
+      let targetQuizId = selectedQuizId;
       if (preselectedQuizId && published.some((q) => q.id === preselectedQuizId)) {
+        targetQuizId = preselectedQuizId;
         setSelectedQuizId(preselectedQuizId);
       } else if (published.length > 0 && !selectedQuizId) {
+        targetQuizId = published[0].id;
         setSelectedQuizId(published[0].id);
+      }
+
+      // Auto-select class matching target quiz subject if available
+      const matchingQuiz = published.find((q) => q.id === targetQuizId);
+      if (matchingQuiz) {
+        const matchingClass = classesList.find((c) => c.subject_id === matchingQuiz.subject_id);
+        if (matchingClass && !classId) {
+          setClassId(matchingClass.id);
+        }
+      } else if (classesList.length > 0 && !classId) {
+        setClassId(classesList[0].id);
       }
     } catch {
       setLoadError('Failed to load published quizzes. Please try again.');
     } finally {
       setIsLoading(false);
     }
-  }, [preselectedQuizId, selectedQuizId]);
+  }, [preselectedQuizId]);
 
   useEffect(() => {
-    loadQuizzes();
-  }, [loadQuizzes]);
+    loadInitialData();
+  }, [loadInitialData]);
+
+  const loadQuizzes = loadInitialData;
 
   // Sync defaults when selected quiz changes
   const activeQuiz = quizzes.find((q) => q.id === selectedQuizId);
@@ -234,15 +271,33 @@ export const SessionFormPage: React.FC = () => {
               <label htmlFor="class-id" className="block text-sm font-medium text-gray-700 mb-1">
                 Target Class UUID <span className="text-red-500">*</span>
               </label>
-              <input
-                id="class-id"
-                type="text"
-                required
-                placeholder="e.g. 123e4567-e89b-12d3-a456-426614174000"
-                value={classId}
-                onChange={(e) => setClassId(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              {assignedClasses.length > 0 ? (
+                <select
+                  id="class-id"
+                  aria-label="Target Class UUID"
+                  required
+                  value={classId}
+                  onChange={(e) => setClassId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {assignedClasses.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id="class-id"
+                  aria-label="Target Class UUID"
+                  type="text"
+                  required
+                  placeholder="e.g. 123e4567-e89b-12d3-a456-426614174000"
+                  value={classId}
+                  onChange={(e) => setClassId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              )}
               <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
                 <Info className="w-3.5 h-3.5 text-gray-400" />
                 Backend requires an active faculty assignment for this class and the quiz's subject.

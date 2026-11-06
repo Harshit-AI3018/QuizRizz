@@ -1,7 +1,7 @@
 export type Role = 'ADMIN' | 'FACULTY' | 'STUDENT';
 
 export interface LoginRequest {
-  college_id: string;
+  college_id?: string;
   email: string;
   password: string;
 }

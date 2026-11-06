@@ -9,9 +9,15 @@ import type {
   QuizUpdate,
   QuizQuestionsReplace,
   QuizPublished,
+  FacultyAssignment,
 } from '../types/faculty';
 
 export const facultyApi = {
+  // Assignments
+  listAssignments(): Promise<FacultyAssignment[]> {
+    return api.get<FacultyAssignment[]>('/faculty/assignments');
+  },
+
   // Questions
   listQuestions(params?: { subject_id?: string; limit?: number; offset?: number }): Promise<QuestionRead[]> {
     return api.get<QuestionRead[]>('/questions', { params });

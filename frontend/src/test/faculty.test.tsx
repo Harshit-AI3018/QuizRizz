@@ -28,6 +28,7 @@ vi.mock('../api/facultyApi', () => ({
     replaceQuizQuestions: vi.fn(),
     deleteQuiz: vi.fn(),
     publishQuiz: vi.fn(),
+    listAssignments: vi.fn().mockResolvedValue([]),
   },
 }));
 

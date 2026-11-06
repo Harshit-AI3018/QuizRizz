@@ -108,6 +108,22 @@ async def join_session_alias(
 
 
 @router.get(
+    "/sessions/{session_id}",
+    response_model=StudentLobbyStatus,
+)
+async def get_session_details(
+    session_id: UUID,
+    connection: DatabaseConnection,
+    actor: Actor,
+) -> Mapping[str, Any]:
+    return await student_service.get_session_lobby(
+        connection,
+        actor,
+        session_id,
+    )
+
+
+@router.get(
     "/sessions/{session_id}/lobby",
     response_model=StudentLobbyStatus,
 )

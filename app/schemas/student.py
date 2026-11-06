@@ -57,6 +57,7 @@ class StudentSessionDiscovery(AuthoringModel):
     duration_minutes: int
     is_joined: bool = False
     has_attempt: bool = False
+    attempt_id: UUID | None = None
     attempt_status: str | None = None
 
 

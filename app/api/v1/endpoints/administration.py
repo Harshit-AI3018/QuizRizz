@@ -66,6 +66,10 @@ UpdateResourceRequest = (
 )
 
 
+def _academic_resource_name(resource_name: ResourceName) -> str:
+    return "student_enrollments" if resource_name == "enrollments" else resource_name.replace("-", "_")
+
+
 @router.get("/college", response_model=dict[str, object])
 async def read_own_college(
     connection: DatabaseConnection,
@@ -98,7 +102,7 @@ async def list_academic_records(
     return await administration_service.list_resources(
         connection,
         actor,
-        resource_name.replace("-", "_"),
+        _academic_resource_name(resource_name),
         limit=limit,
         offset=offset,
     )
@@ -118,7 +122,7 @@ async def create_academic_record(
     return await administration_service.create_resource(
         connection,
         actor,
-        resource_name.replace("-", "_"),
+        _academic_resource_name(resource_name),
         request.model_dump(exclude_unset=True),
     )
 
@@ -133,7 +137,7 @@ async def read_academic_record(
     return await administration_service.get_resource(
         connection,
         actor,
-        resource_name.replace("-", "_"),
+        _academic_resource_name(resource_name),
         record_id,
     )
 
@@ -149,7 +153,7 @@ async def update_academic_record(
     return await administration_service.update_resource(
         connection,
         actor,
-        resource_name.replace("-", "_"),
+        _academic_resource_name(resource_name),
         record_id,
         administration_service.patch_values(request),
     )
@@ -168,7 +172,7 @@ async def delete_academic_record(
     await administration_service.delete_resource(
         connection,
         actor,
-        resource_name.replace("-", "_"),
+        _academic_resource_name(resource_name),
         record_id,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

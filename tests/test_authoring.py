@@ -30,6 +30,23 @@ OPTION_IDS = (
 NOW = datetime.now(timezone.utc)
 
 
+def run_async(coro):
+    """Run an async coroutine synchronously without socket-based event loops."""
+    gen = coro.__await__()
+    val = None
+    exc = None
+    while True:
+        try:
+            if exc:
+                future = gen.throw(exc)
+            else:
+                future = gen.send(val)
+            val = None
+            exc = None
+        except StopIteration as e:
+            return e.value
+
+
 def make_faculty() -> AuthenticatedUser:
     return AuthenticatedUser(
         id=FACULTY_ID,
@@ -218,6 +235,7 @@ class AuthoringSchemaTests(unittest.TestCase):
             "/api/v1/quizzes",
             "/api/v1/quizzes/{quiz_id}",
             "/api/v1/quizzes/{quiz_id}/questions",
+            "/api/v1/faculty/assignments",
         }
         self.assertTrue(expected <= paths.keys())
         for path in expected:
@@ -227,19 +245,19 @@ class AuthoringSchemaTests(unittest.TestCase):
     def test_student_role_is_rejected_by_authoring_gate(self) -> None:
         actor = make_faculty().model_copy(update={"roles": ["STUDENT"]})
         with self.assertRaises(HTTPException) as raised:
-            asyncio.run(require_roles("FACULTY", "ADMIN")(actor))
+            run_async(require_roles("FACULTY", "ADMIN")(actor))
         self.assertEqual(raised.exception.status_code, 403)
 
 
-class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self) -> None:
+class AuthoringServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
         self.connection = MagicMock()
         self.connection.execute = AsyncMock()
         self.connection.commit = AsyncMock()
         self.connection.rollback = AsyncMock()
         self.actor = make_faculty()
 
-    async def test_question_creation_binds_tenant_author_and_answer_options(self) -> None:
+    def test_question_creation_binds_tenant_author_and_answer_options(self) -> None:
         insert_question = make_result(scalar=QUESTION_ID)
         insert_options = make_result()
         selected_question = make_result(row=question_row())
@@ -250,10 +268,12 @@ class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
             selected_question,
         ]
 
-        created = await authoring_service.create_question(
-            self.connection,
-            self.actor,
-            question_payload(),
+        created = run_async(
+            authoring_service.create_question(
+                self.connection,
+                self.actor,
+                question_payload(),
+            )
         )
 
         self.assertEqual(created["id"], QUESTION_ID)
@@ -268,7 +288,7 @@ class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(option_insert.args[1][0]["is_correct"])
         self.connection.commit.assert_awaited_once()
 
-    async def test_question_read_does_not_select_or_return_correctness(self) -> None:
+    def test_question_read_does_not_select_or_return_correctness(self) -> None:
         option_result = make_result(
             rows=[
                 {
@@ -284,10 +304,12 @@ class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
             option_result,
         ]
 
-        question = await authoring_service.get_question(
-            self.connection,
-            self.actor,
-            QUESTION_ID,
+        question = run_async(
+            authoring_service.get_question(
+                self.connection,
+                self.actor,
+                QUESTION_ID,
+            )
         )
 
         self.assertNotIn("is_correct", question["options"][0])
@@ -296,14 +318,16 @@ class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
             if statement.lstrip().startswith("select"):
                 self.assertNotIn("is_correct", statement)
 
-    async def test_subject_access_is_enforced_for_faculty(self) -> None:
+    def test_subject_access_is_enforced_for_faculty(self) -> None:
         self.connection.execute.return_value = make_result(scalar=None)
 
         with self.assertRaises(HTTPException) as raised:
-            await authoring_service.create_question(
-                self.connection,
-                self.actor,
-                question_payload(),
+            run_async(
+                authoring_service.create_question(
+                    self.connection,
+                    self.actor,
+                    question_payload(),
+                )
             )
 
         self.assertEqual(raised.exception.status_code, 403)
@@ -312,7 +336,7 @@ class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parameters["actor_id"], FACULTY_ID)
         self.connection.commit.assert_not_awaited()
 
-    async def test_question_update_is_blocked_when_linked_to_published_quiz(self) -> None:
+    def test_question_update_is_blocked_when_linked_to_published_quiz(self) -> None:
         linked_quizzes = make_result(
             rows=[{"id": QUIZ_ID, "status": "PUBLISHED"}]
         )
@@ -324,17 +348,19 @@ class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with self.assertRaises(HTTPException) as raised:
-            await authoring_service.update_question(
-                self.connection,
-                self.actor,
-                QUESTION_ID,
-                {"question_text": "Changed"},
+            run_async(
+                authoring_service.update_question(
+                    self.connection,
+                    self.actor,
+                    QUESTION_ID,
+                    {"question_text": "Changed"},
+                )
             )
 
         self.assertEqual(raised.exception.status_code, 409)
         self.connection.commit.assert_not_awaited()
 
-    async def test_quiz_assembly_preserves_zero_penalty_override(self) -> None:
+    def test_quiz_assembly_preserves_zero_penalty_override(self) -> None:
         question_link = {
             "question_id": QUESTION_ID,
             "sequence_order": 1,
@@ -356,21 +382,23 @@ class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
             make_result(rows=[question_link]),
         ]
 
-        updated = await authoring_service.replace_quiz_questions(
-            self.connection,
-            self.actor,
-            QUIZ_ID,
-            QuizQuestionsReplace(
-                questions=[
-                    QuizQuestionInput(
-                        question_id=QUESTION_ID,
-                        sequence_order=1,
-                        marks_override=Decimal("2.5000"),
-                        negative_marking_enabled_override=True,
-                        negative_penalty_override=Decimal("0.0000"),
-                    )
-                ]
-            ),
+        updated = run_async(
+            authoring_service.replace_quiz_questions(
+                self.connection,
+                self.actor,
+                QUIZ_ID,
+                QuizQuestionsReplace(
+                    questions=[
+                        QuizQuestionInput(
+                            question_id=QUESTION_ID,
+                            sequence_order=1,
+                            marks_override=Decimal("2.5000"),
+                            negative_marking_enabled_override=True,
+                            negative_penalty_override=Decimal("0.0000"),
+                        )
+                    ]
+                ),
+            )
         )
 
         self.assertEqual(updated["questions"][0]["negative_penalty_override"], Decimal("0.0000"))
@@ -381,7 +409,7 @@ class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.connection.commit.assert_awaited_once()
 
-    async def test_quiz_assembly_rejects_non_draft_state(self) -> None:
+    def test_quiz_assembly_rejects_non_draft_state(self) -> None:
         self.connection.execute.side_effect = [
             make_result(row=quiz_row()),
             make_result(rows=[]),
@@ -390,17 +418,19 @@ class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with self.assertRaises(HTTPException) as raised:
-            await authoring_service.replace_quiz_questions(
-                self.connection,
-                self.actor,
-                QUIZ_ID,
-                QuizQuestionsReplace(questions=[]),
+            run_async(
+                authoring_service.replace_quiz_questions(
+                    self.connection,
+                    self.actor,
+                    QUIZ_ID,
+                    QuizQuestionsReplace(questions=[]),
+                )
             )
 
         self.assertEqual(raised.exception.status_code, 409)
         self.connection.commit.assert_not_awaited()
 
-    async def test_quiz_cannot_be_archived_with_active_sessions(self) -> None:
+    def test_quiz_cannot_be_archived_with_active_sessions(self) -> None:
         self.connection.execute.side_effect = [
             make_result(row=quiz_row()),
             make_result(rows=[]),
@@ -409,15 +439,46 @@ class AuthoringServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with self.assertRaises(HTTPException) as raised:
-            await authoring_service.archive_quiz(
-                self.connection,
-                self.actor,
-                QUIZ_ID,
+            run_async(
+                authoring_service.archive_quiz(
+                    self.connection,
+                    self.actor,
+                    QUIZ_ID,
+                )
             )
 
         self.assertEqual(raised.exception.status_code, 409)
         self.connection.commit.assert_not_awaited()
         self.connection.rollback.assert_awaited_once()
+
+    def test_list_faculty_assignments_returns_assigned_records(self) -> None:
+        expected_records = [
+            {
+                "id": UUID("11111111-2222-3333-4444-555555555555"),
+                "college_id": COLLEGE_ID,
+                "faculty_user_id": FACULTY_ID,
+                "subject_id": SUBJECT_ID,
+                "subject_name": "Data Structures",
+                "subject_code": "CS201",
+                "class_id": UUID("66666666-7777-8888-9999-000000000000"),
+                "class_name": "CSE - Year 2, Sem 3, Sec A",
+                "academic_year_id": UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                "academic_year_name": "2026-2027",
+                "is_active": True,
+            }
+        ]
+        self.connection.execute.return_value = make_result(rows=expected_records)
+
+        assignments = run_async(
+            authoring_service.list_faculty_assignments(
+                self.connection,
+                self.actor,
+            )
+        )
+
+        self.assertEqual(len(assignments), 1)
+        self.assertEqual(assignments[0]["subject_code"], "CS201")
+        self.assertEqual(assignments[0]["subject_name"], "Data Structures")
 
 
 if __name__ == "__main__":
