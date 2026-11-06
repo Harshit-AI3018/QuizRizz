@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -17,7 +17,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configured_settings = settings or Settings()
 
     @asynccontextmanager
-    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         engine = create_database_engine(configured_settings)
         application.state.engine = engine
         application.state.settings = configured_settings
@@ -30,7 +30,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await engine.dispose()
 
     application = FastAPI(
-        title="CampusQuiz API",
+        title="QuizRizz API",
         version="1.0.0",
         lifespan=lifespan,
     )

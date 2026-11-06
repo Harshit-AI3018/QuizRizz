@@ -1,3 +1,4 @@
+import time
 import unittest
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -156,7 +157,8 @@ class TokenTests(unittest.TestCase):
         with self.assertRaises(InvalidTokenError):
             decode_token(token, expected_type="refresh", settings=self.settings)
         with self.assertRaises(InvalidTokenError):
-            decode_token(token[:-1] + ("a" if token[-1] != "a" else "b"),
+            tampered_token = token[:-5] + ("a" if token[-5] != "a" else "b") + token[-4:]
+            decode_token(tampered_token,
                          expected_type="access",
                          settings=self.settings)
 
@@ -212,8 +214,20 @@ class TokenTests(unittest.TestCase):
             token_version=2,
             role="STUDENT",
             settings=self.settings,
-            validity=timedelta(seconds=ticket.split(":", maxsplit=1)[0]),
-        ) if False else None
+        )
+        self.assertNotEqual(ticket, student_ticket)
+
+        # Verify token expiration behavior with validity_seconds
+        validity_secs = 60
+        expiring_ticket = create_actor_ticket(
+            user_id=str(USER_ID),
+            token_version=2,
+            role="STUDENT",
+            settings=self.settings,
+            validity_seconds=validity_secs,
+        )
+        expiring_epoch = int(expiring_ticket.split(":", maxsplit=1)[0])
+        self.assertAlmostEqual(expiring_epoch, int(time.time()) + validity_secs, delta=2)
         # Verify tampered hash fails
         epoch_str, sig_hex = ticket.split(":", 1)
         tampered_ticket = f"{epoch_str}:{sig_hex[:-2]}00"
