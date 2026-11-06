@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
 from app.api.v1.api import api_router
@@ -13,9 +14,10 @@ from app.db.session import create_database_engine
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    configured_settings = settings or Settings()
+
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        configured_settings = settings or Settings()
         engine = create_database_engine(configured_settings)
         application.state.engine = engine
         application.state.settings = configured_settings
@@ -31,6 +33,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="CampusQuiz API",
         version="1.0.0",
         lifespan=lifespan,
+    )
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=configured_settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
     application.include_router(health_router)
     application.include_router(api_router, prefix="/api/v1")
