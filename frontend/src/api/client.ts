@@ -44,7 +44,7 @@ export function unregisterAuthFailureCallback(): void {
 // Global promise lock to prevent concurrent refresh storms
 let refreshPromise: Promise<string> | null = null;
 
-function getBaseUrl(): string {
+export function getBaseUrl(): string {
   // Vite injects environment variables under import.meta.env
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) {
     return import.meta.env.VITE_API_BASE_URL.replace(/\/+$/, '');
@@ -52,10 +52,14 @@ function getBaseUrl(): string {
   return '/api/v1';
 }
 
-function buildUrl(path: string, params?: Record<string, string | number | boolean | undefined | null>): string {
+export function buildUrl(path: string, params?: Record<string, string | number | boolean | undefined | null>): string {
   const baseUrl = getBaseUrl();
-  const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  const url = new URL(`${baseUrl}${cleanPath}`, window.location.origin);
+  const cleanBase = baseUrl.replace(/\/+$/, '');
+  const trimmed = path.replace(/^\/+/, '');
+  const cleanPath = trimmed ? `/${trimmed}` : '';
+  const isAbsolute = /^https?:\/\//i.test(cleanBase);
+  const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : 'http://localhost';
+  const url = new URL(`${cleanBase}${cleanPath}`, origin);
 
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
@@ -65,7 +69,7 @@ function buildUrl(path: string, params?: Record<string, string | number | boolea
     });
   }
 
-  return url.pathname + url.search;
+  return isAbsolute ? url.toString() : url.pathname + url.search;
 }
 
 /**
@@ -80,8 +84,8 @@ async function performTokenRefresh(): Promise<string> {
     throw new ApiError(401, 'No refresh token available');
   }
 
-  const baseUrl = getBaseUrl();
-  const response = await fetch(`${baseUrl}/auth/refresh`, {
+  const url = buildUrl('/auth/refresh');
+  const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

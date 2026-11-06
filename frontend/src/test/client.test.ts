@@ -8,6 +8,7 @@ import {
   clearTokens,
   registerAuthFailureCallback,
   unregisterAuthFailureCallback,
+  buildUrl,
 } from '../api/client';
 import { ApiError } from '../types/api';
 
@@ -247,5 +248,86 @@ describe('API Client', () => {
     expect(authFailureSpy).toHaveBeenCalledTimes(1);
     expect(getAccessToken()).toBeNull();
     expect(getRefreshToken()).toBeNull();
+  });
+
+  describe('buildUrl and Base URL Handling', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('preserves relative URLs for local development', () => {
+      vi.stubEnv('VITE_API_BASE_URL', '/api/v1');
+      expect(buildUrl('/questions')).toBe('/api/v1/questions');
+      expect(buildUrl('questions')).toBe('/api/v1/questions');
+    });
+
+    it('preserves absolute Render API URLs without stripping hostname or scheme', () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://quizrizz-backend.onrender.com/api/v1');
+      expect(buildUrl('/auth/login')).toBe('https://quizrizz-backend.onrender.com/api/v1/auth/login');
+      expect(buildUrl('auth/login')).toBe('https://quizrizz-backend.onrender.com/api/v1/auth/login');
+    });
+
+    it('correctly handles trailing slashes on base URL and leading/duplicate slashes on paths', () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://quizrizz-backend.onrender.com/api/v1///');
+      expect(buildUrl('///students/sessions///')).toBe('https://quizrizz-backend.onrender.com/api/v1/students/sessions///');
+
+      vi.stubEnv('VITE_API_BASE_URL', '/api/v1/');
+      expect(buildUrl('///students/sessions')).toBe('/api/v1/students/sessions');
+    });
+
+    it('appends and serializes query parameters correctly on both relative and absolute URLs', () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://quizrizz-backend.onrender.com/api/v1');
+      const absUrl = buildUrl('/questions', { limit: 10, offset: 0, active: true, skipped: undefined, ignored: null });
+      expect(absUrl).toBe('https://quizrizz-backend.onrender.com/api/v1/questions?limit=10&offset=0&active=true');
+
+      vi.stubEnv('VITE_API_BASE_URL', '/api/v1');
+      const relUrl = buildUrl('/quizzes', { search: 'biology', page: 2 });
+      expect(relUrl).toBe('/api/v1/quizzes?search=biology&page=2');
+    });
+
+    it('uses the absolute backend origin during apiRequest and token refresh', async () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://quizrizz-backend.onrender.com/api/v1');
+      setAccessToken('expired-token');
+      setRefreshToken('valid-refresh-token');
+
+      const fetchCalls: string[] = [];
+      const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+        fetchCalls.push(url);
+        if (url.includes('/auth/refresh')) {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'application/json' }),
+            json: async () => ({
+              access_token: 'new-token',
+              refresh_token: 'new-refresh',
+              token_type: 'bearer',
+              expires_in: 900,
+            }),
+          };
+        }
+        if (fetchCalls.length === 1) {
+          return {
+            ok: false,
+            status: 401,
+            headers: new Headers({ 'content-type': 'application/json' }),
+            json: async () => ({ detail: 'Token expired' }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({ success: true }),
+        };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await api.get('/student/sessions');
+
+      expect(fetchCalls[0]).toBe('https://quizrizz-backend.onrender.com/api/v1/student/sessions');
+      expect(fetchCalls[1]).toBe('https://quizrizz-backend.onrender.com/api/v1/auth/refresh');
+      expect(fetchCalls[2]).toBe('https://quizrizz-backend.onrender.com/api/v1/student/sessions');
+    });
   });
 });
