@@ -150,7 +150,7 @@ export const FacultyAssignmentsPage: React.FC = () => {
               <div className="text-sm text-amber-900 space-y-2">
                 <h3 className="font-semibold text-base">Backend Contract Architecture Notice</h3>
                 <p>
-                  In the CampusQuiz backend, faculty assignments to academic classes and subjects are
+                  In the QuizRizz backend, faculty assignments to academic classes and subjects are
                   exclusively managed via the administrative endpoint:
                 </p>
                 <code className="inline-block px-2 py-1 bg-amber-100 rounded text-xs font-mono text-amber-900">

@@ -25,7 +25,7 @@ export const NavigationShell: React.FC = () => {
             <div className="w-8 h-8 rounded-lg bg-green-600 flex items-center justify-center text-white font-bold text-lg">
               Q
             </div>
-            <span className="text-lg font-bold text-gray-900 tracking-tight">CampusQuiz</span>
+            <span className="text-lg font-bold text-gray-900 tracking-tight">QuizRizz</span>
           </div>
 
           {activeRole && (
@@ -57,7 +57,7 @@ export const NavigationShell: React.FC = () => {
             variant="ghost"
             size="sm"
             onClick={() => logout()}
-            title="Log out of CampusQuiz"
+            title="Log out of QuizRizz"
             className="text-gray-500 hover:text-red-600 hover:bg-red-50"
           >
             <LogOut className="w-4 h-4 mr-1" />
