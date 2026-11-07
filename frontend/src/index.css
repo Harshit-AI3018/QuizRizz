@@ -21,16 +21,37 @@ html.dark body {
   color: #f8fafc;
 }
 
+/* Card & Surface backgrounds */
 html.dark .bg-white,
 html.dark header,
 html.dark footer {
   background-color: #1e293b;
 }
 
+/* Neutral subtle backgrounds */
 html.dark .bg-gray-50 {
   background-color: #0f172a;
 }
 
+html.dark .bg-gray-100 {
+  background-color: #334155;
+  color: #f1f5f9;
+}
+
+html.dark .bg-gray-200 {
+  background-color: #475569;
+}
+
+/* Code & font-mono pills */
+html.dark code,
+html.dark kbd,
+html.dark samp,
+html.dark .font-mono.bg-gray-100 {
+  background-color: #334155;
+  color: #f1f5f9;
+}
+
+/* Text colors */
 html.dark .text-gray-900,
 html.dark .text-gray-800 {
   color: #f8fafc;
@@ -46,12 +67,19 @@ html.dark .text-gray-400 {
   color: #94a3b8;
 }
 
-html.dark .border-gray-200,
+/* Borders & Dividers */
 html.dark .border-gray-100,
+html.dark .border-gray-200,
 html.dark .border-gray-300 {
   border-color: #334155;
 }
 
+html.dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-gray-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #334155;
+}
+
+/* Form inputs & selects */
 html.dark input:not([type="checkbox"]):not([type="radio"]),
 html.dark textarea,
 html.dark select {
@@ -60,13 +88,120 @@ html.dark select {
   border-color: #475569;
 }
 
+html.dark select option {
+  background-color: #1e293b;
+  color: #f8fafc;
+}
+
 html.dark button.bg-white {
   background-color: #1e293b;
   color: #f1f5f9;
   border-color: #475569;
 }
 
+/* Hover states */
 html.dark .hover\:bg-gray-50:hover,
 html.dark .hover\:bg-gray-100:hover {
   background-color: #334155;
+}
+
+/* Soft color tint backgrounds (active nav items, alerts, stat cards) */
+html.dark [class*="bg-purple-50"] {
+  background-color: rgba(168, 85, 247, 0.15);
+}
+html.dark .text-purple-700,
+html.dark .text-purple-800 {
+  color: #d8b4fe;
+}
+html.dark .border-purple-100,
+html.dark .border-purple-200 {
+  border-color: rgba(168, 85, 247, 0.3);
+}
+
+html.dark [class*="bg-blue-50"] {
+  background-color: rgba(59, 130, 246, 0.15);
+}
+html.dark .text-blue-700,
+html.dark .text-blue-800,
+html.dark .text-blue-900 {
+  color: #93c5fd;
+}
+html.dark .border-blue-100,
+html.dark .border-blue-200 {
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+html.dark [class*="bg-green-50"] {
+  background-color: rgba(34, 197, 94, 0.15);
+}
+html.dark .text-green-700,
+html.dark .text-green-800,
+html.dark .text-green-900 {
+  color: #86efac;
+}
+html.dark .border-green-100,
+html.dark .border-green-200 {
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+html.dark [class*="bg-amber-50"] {
+  background-color: rgba(245, 158, 11, 0.15);
+}
+html.dark .text-amber-700,
+html.dark .text-amber-800,
+html.dark .text-amber-900 {
+  color: #fde68a;
+}
+html.dark .border-amber-100,
+html.dark .border-amber-200 {
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+html.dark [class*="bg-red-50"] {
+  background-color: rgba(239, 68, 68, 0.15);
+}
+html.dark .text-red-700,
+html.dark .text-red-800,
+html.dark .text-red-900 {
+  color: #fca5a5;
+}
+html.dark .border-red-100,
+html.dark .border-red-200 {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+/* Badge variants (bg-*-100) */
+html.dark .bg-purple-100 {
+  background-color: rgba(168, 85, 247, 0.2);
+  color: #e9d5ff;
+}
+html.dark .bg-blue-100 {
+  background-color: rgba(59, 130, 246, 0.2);
+  color: #bfdbfe;
+}
+html.dark .bg-green-100 {
+  background-color: rgba(34, 197, 94, 0.2);
+  color: #bbf7d0;
+}
+html.dark .bg-amber-100 {
+  background-color: rgba(245, 158, 11, 0.2);
+  color: #fef08a;
+}
+html.dark .bg-red-100 {
+  background-color: rgba(239, 68, 68, 0.2);
+  color: #fecaca;
+}
+
+/* Hover states for interactive colored items */
+html.dark .hover\:bg-purple-50:hover {
+  background-color: rgba(168, 85, 247, 0.25);
+}
+html.dark .hover\:bg-red-50:hover {
+  background-color: rgba(239, 68, 68, 0.25);
+}
+html.dark .hover\:bg-blue-50:hover {
+  background-color: rgba(59, 130, 246, 0.25);
+}
+html.dark .hover\:bg-amber-50:hover {
+  background-color: rgba(245, 158, 11, 0.25);
 }
