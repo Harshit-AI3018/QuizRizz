@@ -4,6 +4,7 @@ import { LogOut, ArrowLeftRight, User as UserIcon } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
+import { ThemeToggle } from '../common/ThemeToggle';
 
 export const NavigationShell: React.FC = () => {
   const { user, activeRole, logout } = useAuth();
@@ -36,6 +37,8 @@ export const NavigationShell: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-3">
+          <ThemeToggle />
+
           {user.roles.length > 1 && (
             <Button
               variant="secondary"
