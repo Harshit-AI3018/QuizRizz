@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import React from 'react';
 import { AuthProvider, useAuth } from '../context/AuthContext';
 import { authApi } from '../api/authApi';
@@ -143,5 +143,54 @@ describe('AuthContext', () => {
     expect(result.current.activeRole).toBeNull();
     expect(getAccessToken()).toBeNull();
     expect(getRefreshToken()).toBeNull();
+  });
+
+  it('restores authenticated session and activeRole upon page reload / remount', async () => {
+    const mockUser = {
+      id: 'admin-id-1',
+      college_id: 'college-id-1',
+      email: 'admin@example.edu',
+      first_name: 'Admin',
+      last_name: 'User',
+      roles: ['ADMIN'] as Role[],
+      must_change_password: false,
+    };
+
+    vi.spyOn(authApi, 'login').mockResolvedValue({
+      access_token: 'admin-token',
+      refresh_token: 'admin-refresh',
+      token_type: 'bearer',
+      expires_in: 900,
+      user: mockUser,
+    });
+    vi.spyOn(authApi, 'getCurrentUser').mockResolvedValue(mockUser);
+
+    // Initial session: User logs in
+    const { result: firstMount, unmount } = renderHook(() => useAuth(), { wrapper });
+    await act(async () => {
+      await firstMount.current.login({
+        college_id: 'college-id-1',
+        email: 'admin@example.edu',
+        password: 'password123',
+      });
+    });
+
+    expect(firstMount.current.isAuthenticated).toBe(true);
+    expect(firstMount.current.activeRole).toBe('ADMIN');
+
+    // Simulate page reload (unmount old tree and mount fresh AuthProvider)
+    unmount();
+
+    const { result: reloadedMount } = renderHook(() => useAuth(), { wrapper });
+
+    // Wait for initializeSession to finish restoring session
+    await waitFor(() => {
+      expect(reloadedMount.current.isLoading).toBe(false);
+    });
+
+    // Session is fully restored without logging in again!
+    expect(reloadedMount.current.isAuthenticated).toBe(true);
+    expect(reloadedMount.current.user).toEqual(mockUser);
+    expect(reloadedMount.current.activeRole).toBe('ADMIN');
   });
 });
