@@ -5,7 +5,6 @@ import { Card } from '../../components/common/Card';
 import { Input } from '../../components/common/Input';
 import { Button } from '../../components/common/Button';
 import { ErrorDisplay } from '../../components/common/ErrorDisplay';
-import { ThemeToggle } from '../../components/common/ThemeToggle';
 import { Footer } from '../../components/layout/Footer';
 
 export const LoginPage: React.FC = () => {
@@ -68,10 +67,7 @@ export const LoginPage: React.FC = () => {
   const errorMessage = validationError || authError;
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50 text-gray-900 relative">
-      <div className="absolute top-4 right-4 sm:top-6 sm:right-6">
-        <ThemeToggle />
-      </div>
+    <div className="min-h-screen flex flex-col bg-gray-50 text-gray-900">
       <div className="flex-1 flex flex-col justify-center items-center py-12 px-4 sm:px-6 lg:px-8">
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
