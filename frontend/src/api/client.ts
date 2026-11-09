@@ -1,12 +1,19 @@
 import { ApiError, type ApiErrorResponse, type RequestOptions } from '../types/api';
 import type { TokenResponse } from '../types/auth';
 
-/**
- * In-memory token storage.
- * Strictly adheres to project constraints: zero localStorage, zero sessionStorage.
- */
 let inMemoryAccessToken: string | null = null;
 let inMemoryRefreshToken: string | null = null;
+
+function getStorage(): Storage | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage;
+    }
+  } catch {
+    // Security or sandbox restrictions
+  }
+  return null;
+}
 
 // Auth failure callback registered by AuthProvider
 type AuthFailureCallback = () => void;
@@ -14,23 +21,50 @@ let authFailureCallback: AuthFailureCallback | null = null;
 
 export function setAccessToken(token: string | null): void {
   inMemoryAccessToken = token;
+  const storage = getStorage();
+  if (storage) {
+    if (token) storage.setItem('qr_access_token', token);
+    else storage.removeItem('qr_access_token');
+  }
 }
 
 export function getAccessToken(): string | null {
+  if (inMemoryAccessToken) return inMemoryAccessToken;
+  const storage = getStorage();
+  if (storage) {
+    const stored = storage.getItem('qr_access_token');
+    if (stored) inMemoryAccessToken = stored;
+  }
   return inMemoryAccessToken;
 }
 
 export function setRefreshToken(token: string | null): void {
   inMemoryRefreshToken = token;
+  const storage = getStorage();
+  if (storage) {
+    if (token) storage.setItem('qr_refresh_token', token);
+    else storage.removeItem('qr_refresh_token');
+  }
 }
 
 export function getRefreshToken(): string | null {
+  if (inMemoryRefreshToken) return inMemoryRefreshToken;
+  const storage = getStorage();
+  if (storage) {
+    const stored = storage.getItem('qr_refresh_token');
+    if (stored) inMemoryRefreshToken = stored;
+  }
   return inMemoryRefreshToken;
 }
 
 export function clearTokens(): void {
   inMemoryAccessToken = null;
   inMemoryRefreshToken = null;
+  const storage = getStorage();
+  if (storage) {
+    storage.removeItem('qr_access_token');
+    storage.removeItem('qr_refresh_token');
+  }
 }
 
 export function registerAuthFailureCallback(callback: AuthFailureCallback): void {

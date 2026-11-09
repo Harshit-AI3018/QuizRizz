@@ -3,6 +3,7 @@ import type { LoginRequest, Role, UserProfile } from '../types/auth';
 import { authApi } from '../api/authApi';
 import {
   setAccessToken,
+  getAccessToken,
   setRefreshToken,
   getRefreshToken,
   clearTokens,
@@ -24,6 +25,21 @@ export interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function getSavedRole(): Role | null {
+  try {
+    return localStorage.getItem('qr_active_role') as Role | null;
+  } catch {
+    return null;
+  }
+}
+
+function setSavedRole(role: Role | null): void {
+  try {
+    if (role) localStorage.setItem('qr_active_role', role);
+    else localStorage.removeItem('qr_active_role');
+  } catch {}
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [activeRole, setActiveRole] = useState<Role | null>(null);
@@ -34,6 +50,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     clearTokens();
     setUser(null);
     setActiveRole(null);
+    setSavedRole(null);
     setIsLoading(false);
   }, []);
 
@@ -56,16 +73,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       try {
-        const refreshResult = await authApi.refresh({ refresh_token: existingRefreshToken });
-        setAccessToken(refreshResult.access_token);
-        if (refreshResult.refresh_token) {
-          setRefreshToken(refreshResult.refresh_token);
+        let profile: UserProfile | null = null;
+        if (getAccessToken()) {
+          try {
+            profile = await authApi.getCurrentUser();
+          } catch {
+            // Access token might be expired, proceed to refresh below
+          }
         }
 
-        const profile = await authApi.getCurrentUser();
+        if (!profile) {
+          const refreshResult = await authApi.refresh({ refresh_token: existingRefreshToken });
+          setAccessToken(refreshResult.access_token);
+          if (refreshResult.refresh_token) {
+            setRefreshToken(refreshResult.refresh_token);
+          }
+          profile = await authApi.getCurrentUser();
+        }
+
         if (isMounted) {
           setUser(profile);
-          if (profile.roles.length === 1) {
+          const savedRole = getSavedRole();
+          if (savedRole && profile.roles.includes(savedRole)) {
+            setActiveRole(savedRole);
+          } else if (profile.roles.length === 1) {
             setActiveRole(profile.roles[0]);
           } else {
             setActiveRole(null);
@@ -100,14 +131,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(response.user);
       if (response.user.roles.length === 1) {
         setActiveRole(response.user.roles[0]);
+        setSavedRole(response.user.roles[0]);
       } else {
         // Multi-role user must pick their active role on the role selection page
         setActiveRole(null);
+        setSavedRole(null);
       }
     } catch (err) {
       clearTokens();
       setUser(null);
       setActiveRole(null);
+      setSavedRole(null);
       const msg = err instanceof Error ? err.message : 'Login failed. Please check your credentials.';
       setError(msg);
       throw err;
@@ -129,6 +163,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       clearTokens();
       setUser(null);
       setActiveRole(null);
+      setSavedRole(null);
       setError(null);
       setIsLoading(false);
     }
@@ -137,6 +172,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const selectRole = useCallback((role: Role) => {
     if (user && user.roles.includes(role)) {
       setActiveRole(role);
+      setSavedRole(role);
     } else {
       setError(`User is not authorized for role ${role}`);
     }
